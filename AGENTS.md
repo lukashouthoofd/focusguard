@@ -1,28 +1,81 @@
-﻿# AGENTS.md
+# AGENTS.md
 
-These project guidelines are adapted from the four principles in [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills/blob/main/CLAUDE.md). Its README identifies that project as MIT licensed. This file restates the guidance for FocusGuard and adds project-specific requirements.
+Adapted from [multica-ai/andrej-karpathy-skills `CLAUDE.md`](https://github.com/multica-ai/andrej-karpathy-skills/blob/main/CLAUDE.md), which the upstream README identifies as MIT licensed. This file adds FocusGuard-specific requirements below.
 
-## Think before changing code
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
-Inspect the relevant code and evidence first. State assumptions and tradeoffs when they materially affect the result. Keep moving when the request is clear; ask only when a missing decision would materially change the outcome.
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
-## Keep solutions simple
+## 1. Think Before Coding
 
-Implement the smallest complete change that meets the requested behavior. Avoid speculative features, one-use abstractions, and complexity without a demonstrated need.
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-## Keep changes scoped
+Before implementing:
 
-Preserve existing conventions and unrelated behavior. Modify only what the task requires, and remove only unused artifacts introduced by the change.
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
 
-## Define and verify outcomes
+## 2. Simplicity First
 
-For substantive work, set observable success criteria and verify them against the actual behavior. Keep concise progress notes for multi-step work, including failures and recovery paths.
+**Minimum code that solves the problem. Nothing speculative.**
 
-## FocusGuard requirements
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
 
-- Use REA as the primary methodology when a claim depends on shipped-app or runtime behavior; distinguish observed evidence from inference and unknowns.
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it — don't delete it.
+
+When your changes create orphans:
+
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+
+```text
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+These guidelines are working if: fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## FocusGuard-specific requirements
+
+- Use REA as the primary methodology when a claim depends on shipped-app or runtime behavior; distinguish observation, inference, and unknowns.
 - Build independently from public documentation. Never copy proprietary source or circumvent paid licensing.
 - Prioritize Windows blocking reliability, safe recovery, and honest limits over cosmetic features.
-- Treat administrator access, service installation, firewall/hosts changes, and other machine-wide changes as explicit, reversible user choices.
-- Never describe the product as tamperproof. Name the tested user privilege level and bypass conditions for every security claim.
+- Treat administrator access, service installation, hosts/WFP changes, and other machine-wide changes as explicit, reversible user choices.
+- Never describe the product as tamperproof. State the tested Windows version, user privilege level, and known bypass conditions for each security claim.
 - Do not publish a release or make irreversible system changes without explicit user approval.

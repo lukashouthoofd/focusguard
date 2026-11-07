@@ -2,6 +2,8 @@
 
 ## Design direction
 
+The implementation sequence and service boundary are detailed in [the Windows service proposal](../design/windows-service.md). This note records initial feasibility and platform constraints.
+
 Use Focuser's rule engine, schedule/allowance model, interface, and browser extension as the MIT starting point, then separate Windows enforcement from the interactive app.
 
 - **Policy owner:** Windows Service with automatic startup and SCM recovery actions; treat the account and service ACL as a real security boundary, not a hidden process.
@@ -17,7 +19,7 @@ Windows Services, the Service Control Manager, and Windows Filtering Platform ar
 
 FocusGuard can meaningfully resist casual changes from a standard user account when an administrator installs the service and restricts its service-control permissions. It cannot prevent the local device owner or an administrator from disabling the service, changing policy/firewall state, booting alternate media, or reinstalling Windows. The UI and product copy must say this plainly.
 
-Any service install, hosts/WFP modification, firewall rule, task, registry change, or user-policy change will be shown before it is applied and must have an explicit rollback path. No such host-wide changes have been made in this repo scaffold.
+Any service install, hosts/WFP modification, firewall rule, task, registry change, or user-policy change will be shown before it is applied and must have an explicit rollback path. The checked-in development installer currently creates a highest-privilege logon Scheduled Task, and the app can write a marked hosts-file section when enforcement runs. Neither has been run on the development host. No Windows service or WFP/firewall policy has been installed. Run those paths only in a disposable VM until the service design and recovery path are tested.
 
 ## Test matrix
 

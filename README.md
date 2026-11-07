@@ -16,7 +16,7 @@ The Rust workspace, desktop frontend, and browser extension have been built and 
 - Provide explicit recovery and uninstall paths; describe the administrator and alternate-boot bypass boundary honestly.
 - Remain local-first and open source.
 
-These goals are not all implemented yet. Read [PROGRESS.md](PROGRESS.md), the [research notes](docs/research/), and the [Windows design](docs/research/windows-feasibility.md) for current evidence and known gaps.
+These goals are not all implemented yet. Read [PROGRESS.md](PROGRESS.md), the [research notes](docs/research/), the [Windows feasibility notes](docs/research/windows-feasibility.md), and the [service architecture proposal](docs/design/windows-service.md) for current evidence and known gaps.
 
 ## Build and test
 

@@ -723,7 +723,7 @@ mod tests {
             ("rm", "rm -rf /Applications/FocusGuard.app"),
             (
                 "zsh",
-                "zsh -c rm -rf \"$HOME/Library/Application Support/com.focusguard.FocusGuard\"",
+                "zsh -c rm -rf \"$HOME/Library/Application Support/com.publikhq.FocusGuard\"",
             ),
             (
                 "launchctl",
@@ -760,7 +760,7 @@ mod tests {
             ("snap", "snap remove focusguard"),
             ("flatpak", "flatpak uninstall --user com.focusguard.app"),
             ("rm", "rm -f /usr/bin/focusguard-ui"),
-            ("unlink", "unlink /usr/bin/focusguard-cli"),
+            ("unlink", "unlink /usr/lib/focusguard/focuser-cli"),
             ("rm", "rm -rf /home/u/.local/share/focusguard"),
             ("rm", "rm -rf /home/u/.config/autostart/FocusGuard.desktop"),
             (

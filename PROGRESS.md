@@ -21,6 +21,7 @@ The public repository was created at <https://github.com/lukashouthoofd/focusgua
 - Kept user-visible lock wording honest: current Windows behavior refuses normal app quit while locked; no Windows service has been implemented.
 - Verification on this checkout: `cargo test --workspace --locked --quiet` passed all Rust test groups and doctests; `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo build --workspace --locked` passed. The desktop frontend passed 279 tests and a production Vite build. The extension passed typecheck, 137 tests, and Chromium/Firefox MV3 builds.
 - Frontend Biome lint initially surfaced Windows line-ending formatting drift only; `biome lint` found no code-rule violations. Frontend files were formatted, LF endings are declared in `.gitattributes`, and `npm run lint`, all 279 frontend tests, and the production build pass afterward.
+- First public CI run `42425408207`: extension, frontend, binding-drift, and all three platform build jobs passed. Windows Rust tests/Clippy/format also passed. Ubuntu and macOS test jobs found two stale platform-specific uninstall fixtures from the rebrand (old macOS bundle ID and a CLI path outside the actual Linux bundle); these fixtures are corrected and awaiting the next CI run.
 - One Rust API test initially failed because a custom HTTP helper omitted the now-required extension Origin. The helper was corrected to model extension requests, the explicit website-origin denial test still overrides it, and the complete Rust suite passed afterward.
 - Strict Clippy surfaced an inherited boolean simplification in `crates/focuser-ui/src/closing.rs`; the equivalent predicate was simplified and strict Clippy then passed.
 
@@ -31,6 +32,8 @@ The public repository was created at <https://github.com/lukashouthoofd/focusgua
 - The local extension API's origin checks are not a defense against native software that can call loopback directly. Browser integration and same-user local-process tests remain outstanding.
 - A genuine service design needs a least-privilege reviewed IPC boundary, durable policy source, restart recovery, uninstall cleanup, and explicit administrator recovery paths. Do not claim administrator-resistant enforcement.
 - The exact Windows-target dependency notice bundle, signed installer, reproducible CI artifacts, and PublikHQ-ready listing have not been completed. No release has been published.
+- A focused source review confirmed that service integration must move database/command ownership and the extension API out of the UI together; otherwise UI shutdown or the existing loopback endpoint remains a bypass. The detailed phased design and its pipe/storage/installer gates are in `docs/design/windows-service.md`.
+- The host has no `New-VM`, `VBoxManage`, `vmrun`, or `WindowsSandbox` command available. The virtualization layer is present, but no VM management tool is available in this session. No app installer, service, hosts, or firewall behavior has been exercised in an isolated Windows VM.
 
 ## 2026-11-07 — repository scaffold and direction
 
