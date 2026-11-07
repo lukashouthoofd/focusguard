@@ -1,0 +1,23 @@
+[package]
+name = "focuser-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line interface for FocusGuard"
+
+[dependencies]
+focuser-app = { workspace = true }
+focuser-common = { workspace = true }
+focuser-core = { workspace = true }
+directories = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+# Cross-platform terminal echo control, including restoration on read errors.
+rpassword = "7.5"
+
+[dev-dependencies]
+tempfile = "3"

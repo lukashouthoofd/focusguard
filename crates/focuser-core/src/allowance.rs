@@ -1,0 +1,515 @@
+//! Allowance tracker: consumes ticks (from the extension for domains or
+//! from a platform watcher for apps) and maintains per-day usage. When a
+//! quota is exhausted the target is added to a transient block set that
+//! the extension picks up on its next rules poll.
+
+use chrono::{Local, NaiveDate};
+use focuser_common::allowance::{Allowance, AllowanceMatch, AllowanceTick};
+use focuser_common::error::Result;
+use focuser_common::host::{canonical_host, hosts_entries};
+use focuser_common::types::EntityId;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use tracing::info;
+
+use crate::Database;
+use crate::engine::BlockEngine;
+
+/// Seconds added per tick. Must match the extension's reporting cadence.
+pub const TICK_INCREMENT_SECS: u32 = 5;
+
+/// Warning thresholds (used by the UI / notifier to trigger toasts).
+pub const WARN_THRESHOLD_PCT: u8 = 80;
+
+/// Shared tracker that lives inside the app state. Stores the set of
+/// domains/apps currently blocked due to exhausted allowances, plus a
+/// one-shot warning set so we only toast once per threshold per day.
+pub struct AllowanceTracker {
+    inner: Mutex<TrackerInner>,
+}
+
+#[derive(Default)]
+struct TrackerInner {
+    /// Domains blocked today due to exhausted allowance.
+    blocked_domains: HashSet<String>,
+    /// App executables blocked today.
+    blocked_apps: HashSet<String>,
+    /// (allowance_id, threshold_pct) tuples we already notified for today.
+    warned_today: HashSet<(String, u8)>,
+    /// The date (local) the current tracker state corresponds to.
+    tracked_date: Option<NaiveDate>,
+    /// Events buffered for the UI (notifications).
+    pending_notifications: Vec<AllowanceNotification>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AllowanceNotification {
+    pub allowance_id: String,
+    pub target: String,
+    pub kind: AllowanceNotificationKind,
+    pub used_secs: u32,
+    pub limit_secs: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub enum AllowanceNotificationKind {
+    Warning80,
+    Exhausted,
+}
+
+impl Default for AllowanceTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AllowanceTracker {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(TrackerInner::default()),
+        }
+    }
+
+    /// Check and reset daily state if the local date has changed.
+    fn reset_if_new_day(&self, inner: &mut TrackerInner) {
+        let today = Local::now().date_naive();
+        if inner.tracked_date != Some(today) {
+            if inner.tracked_date.is_some() {
+                info!("Allowance tracker: new day — resetting blocked set");
+            }
+            inner.blocked_domains.clear();
+            inner.blocked_apps.clear();
+            inner.warned_today.clear();
+            inner.tracked_date = Some(today);
+        }
+    }
+
+    /// Recompute the blocked set from DB state (on startup / manual refresh).
+    pub fn rebuild_from_db(&self, db: &Database) -> Result<()> {
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        self.reset_if_new_day(&mut inner);
+        inner.blocked_domains.clear();
+        inner.blocked_apps.clear();
+        for a in db.list_allowances()? {
+            if !a.enabled {
+                continue;
+            }
+            let used = db.get_allowance_used_today(a.id)?;
+            if used >= a.daily_limit_secs {
+                match &a.target {
+                    AllowanceMatch::Domain(d) => {
+                        inner.blocked_domains.insert(canonical_host(d));
+                    }
+                    AllowanceMatch::AppExecutable(e) => {
+                        inner.blocked_apps.insert(e.to_lowercase());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle one tick. Attributes the tick to any matching allowance,
+    /// increments usage, and updates the blocked set when exhausted.
+    pub fn ingest_tick(&self, db: &Database, tick: &AllowanceTick) -> Result<()> {
+        if db.ingest_shared_at(tick, Local::now())? || tick.shared_only {
+            return Ok(());
+        }
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        self.reset_if_new_day(&mut inner);
+        drop(inner);
+
+        // Use the client-provided increment (capped to [1, 120]) so that
+        // alarm-driven ticks (30s) credit correctly while interval ticks (5s)
+        // stay fine-grained. Default to TICK_INCREMENT_SECS for old clients.
+        let inc = tick
+            .increment_secs
+            .unwrap_or(TICK_INCREMENT_SECS)
+            .clamp(1, 120);
+
+        let matches = find_matching_allowances(db, tick)?;
+        for a in matches {
+            if !a.enabled {
+                continue;
+            }
+            // If strict_mode, only count when active=true.
+            if a.strict_mode && !tick.active {
+                continue;
+            }
+            let used = db.increment_allowance_usage(a.id, inc)?;
+            self.check_thresholds(&a, used);
+        }
+        Ok(())
+    }
+
+    /// Emit warning / exhausted notifications at thresholds. Updates the
+    /// blocked set when a limit is hit.
+    fn check_thresholds(&self, a: &Allowance, used: u32) {
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        self.reset_if_new_day(&mut inner);
+
+        let limit = a.daily_limit_secs.max(1);
+        let pct = ((used as u64) * 100 / (limit as u64)).min(255) as u8;
+        let id_str = a.id.to_string();
+
+        if pct >= 100 {
+            match &a.target {
+                AllowanceMatch::Domain(d) => {
+                    if inner.blocked_domains.insert(canonical_host(d))
+                        && !inner.warned_today.contains(&(id_str.clone(), 100))
+                    {
+                        inner.warned_today.insert((id_str.clone(), 100));
+                        inner.pending_notifications.push(AllowanceNotification {
+                            allowance_id: id_str,
+                            target: d.clone(),
+                            kind: AllowanceNotificationKind::Exhausted,
+                            used_secs: used,
+                            limit_secs: limit,
+                        });
+                    }
+                }
+                AllowanceMatch::AppExecutable(e) => {
+                    if inner.blocked_apps.insert(e.to_lowercase())
+                        && !inner.warned_today.contains(&(id_str.clone(), 100))
+                    {
+                        inner.warned_today.insert((id_str.clone(), 100));
+                        inner.pending_notifications.push(AllowanceNotification {
+                            allowance_id: id_str,
+                            target: e.clone(),
+                            kind: AllowanceNotificationKind::Exhausted,
+                            used_secs: used,
+                            limit_secs: limit,
+                        });
+                    }
+                }
+            }
+        } else if pct >= WARN_THRESHOLD_PCT
+            && !inner
+                .warned_today
+                .contains(&(id_str.clone(), WARN_THRESHOLD_PCT))
+        {
+            inner
+                .warned_today
+                .insert((id_str.clone(), WARN_THRESHOLD_PCT));
+            inner.pending_notifications.push(AllowanceNotification {
+                allowance_id: id_str,
+                target: a.target.display().to_string(),
+                kind: AllowanceNotificationKind::Warning80,
+                used_secs: used,
+                limit_secs: limit,
+            });
+        }
+    }
+
+    /// Is a hostname blocked right now due to an exhausted allowance?
+    pub fn is_domain_blocked(&self, hostname: &str) -> bool {
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        self.reset_if_new_day(&mut inner);
+        let h = hostname.trim().to_ascii_lowercase();
+        let h = h.strip_prefix("www.").unwrap_or(&h).to_string();
+        inner
+            .blocked_domains
+            .iter()
+            .any(|d| d == &h || h.ends_with(&format!(".{d}")))
+    }
+
+    pub fn is_app_blocked(&self, exe_name: &str) -> bool {
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        self.reset_if_new_day(&mut inner);
+        inner
+            .blocked_apps
+            .contains(&exe_name.trim().to_ascii_lowercase())
+    }
+
+    /// Snapshot the blocked domain set (for extension rule compilation).
+    pub fn blocked_domains(&self) -> Vec<String> {
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        self.reset_if_new_day(&mut inner);
+        inner
+            .blocked_domains
+            .iter()
+            .flat_map(|d| hosts_entries(d))
+            .collect()
+    }
+
+    /// Domains with an *active, non-exhausted* allowance — these should be
+    /// treated as exceptions to block list rules so the user can access
+    /// them until their daily quota runs out.
+    ///
+    /// Allowance exceptions are **suspended during a Pomodoro work phase**:
+    /// the user explicitly committed to focus, so the back door is closed.
+    /// During break phases, or with no Pomodoro running, exceptions apply.
+    /// They also stop at a scheduled list's hours, which are a hard block.
+    pub fn active_allowance_domains(&self, engine: &BlockEngine) -> Vec<String> {
+        let db = engine.db();
+        if is_pomodoro_work_phase(db) {
+            return Vec::new();
+        }
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        self.reset_if_new_day(&mut inner);
+        let blocked = inner.blocked_domains.clone();
+        drop(inner);
+
+        let mut out = Vec::new();
+        let Ok(list) = db.list_allowances() else {
+            return out;
+        };
+        for a in list {
+            if !a.enabled {
+                continue;
+            }
+            if let AllowanceMatch::Domain(d) = &a.target {
+                let host = canonical_host(d);
+                // Already exhausted → not an exception, it's blocked.
+                if blocked.contains(&host) || engine.scheduled_block_on_domain(&host) {
+                    continue;
+                }
+                let Ok(used) = db.get_allowance_used_today(a.id) else {
+                    continue;
+                };
+                if used < a.daily_limit_secs {
+                    out.push(host);
+                }
+            }
+        }
+        out
+    }
+
+    /// App executables with an active, non-exhausted allowance.
+    /// Suspended the same way as domains (see note above).
+    pub fn active_allowance_apps(&self, engine: &BlockEngine) -> Vec<String> {
+        let db = engine.db();
+        if is_pomodoro_work_phase(db) {
+            return Vec::new();
+        }
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        self.reset_if_new_day(&mut inner);
+        let blocked = inner.blocked_apps.clone();
+        drop(inner);
+
+        let mut out = Vec::new();
+        let Ok(list) = db.list_allowances() else {
+            return out;
+        };
+        for a in list {
+            if !a.enabled {
+                continue;
+            }
+            if let AllowanceMatch::AppExecutable(e) = &a.target {
+                let lc = e.to_ascii_lowercase();
+                if blocked.contains(&lc) || engine.scheduled_block_on_app(&lc) {
+                    continue;
+                }
+                let Ok(used) = db.get_allowance_used_today(a.id) else {
+                    continue;
+                };
+                if used < a.daily_limit_secs {
+                    out.push(lc);
+                }
+            }
+        }
+        out
+    }
+
+    pub fn blocked_apps(&self) -> Vec<String> {
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        self.reset_if_new_day(&mut inner);
+        inner.blocked_apps.iter().cloned().collect()
+    }
+
+    /// Drain buffered notifications (consumed by the UI event loop).
+    pub fn take_notifications(&self) -> Vec<AllowanceNotification> {
+        let mut inner = self.inner.lock().expect("tracker mutex poisoned");
+        std::mem::take(&mut inner.pending_notifications)
+    }
+}
+
+fn find_matching_allowances(db: &Database, tick: &AllowanceTick) -> Result<Vec<Allowance>> {
+    let all = db.list_allowances()?;
+    let mut out = Vec::new();
+    if let Some(host) = tick.hostname.as_deref() {
+        for a in &all {
+            if matches!(&a.target, AllowanceMatch::Domain(_)) && a.target.matches_hostname(host) {
+                out.push(a.clone());
+            }
+        }
+    }
+    if let Some(exe) = tick.app_exe.as_deref() {
+        let exe_lc = exe.to_ascii_lowercase();
+        for a in &all {
+            if let AllowanceMatch::AppExecutable(e) = &a.target
+                && e.to_ascii_lowercase() == exe_lc
+            {
+                out.push(a.clone());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// True iff an active Pomodoro session is currently in an *unpaused*
+/// Work phase. Pausing suspends the focus contract → allowance
+/// exceptions re-apply. Resuming reinstates the suspension.
+pub(crate) fn is_pomodoro_work_phase(db: &Database) -> bool {
+    matches!(
+        db.get_active_pomodoro_session(),
+        Ok(Some(s)) if s.current_phase.is_work() && !s.is_paused()
+    )
+}
+
+/// Build a map of {allowance_id → used_today_secs} for debug/UI.
+#[allow(dead_code)]
+pub fn usage_map(db: &Database) -> Result<HashMap<EntityId, u32>> {
+    let mut map = HashMap::new();
+    for a in db.list_allowances()? {
+        map.insert(a.id, db.get_allowance_used_today(a.id)?);
+    }
+    Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use focuser_common::allowance::{Allowance, AllowanceMatch};
+
+    fn mk_db() -> Database {
+        Database::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn tick_increments_usage() {
+        let db = mk_db();
+        let a = Allowance::new(AllowanceMatch::Domain("youtube.com".into()), 60, false);
+        db.create_allowance(&a).unwrap();
+
+        let tracker = AllowanceTracker::new();
+        let tick = AllowanceTick {
+            url: None,
+            shared_active: false,
+            shared_only: false,
+            hostname: Some("youtube.com".into()),
+            app_exe: None,
+            active: true,
+            source: "test".into(),
+            increment_secs: None,
+        };
+        tracker.ingest_tick(&db, &tick).unwrap();
+        assert_eq!(
+            db.get_allowance_used_today(a.id).unwrap(),
+            TICK_INCREMENT_SECS
+        );
+    }
+
+    #[test]
+    fn strict_mode_ignores_inactive() {
+        let db = mk_db();
+        let a = Allowance::new(AllowanceMatch::Domain("twitter.com".into()), 60, true);
+        db.create_allowance(&a).unwrap();
+
+        let tracker = AllowanceTracker::new();
+        let tick = AllowanceTick {
+            url: None,
+            shared_active: false,
+            shared_only: false,
+            hostname: Some("twitter.com".into()),
+            app_exe: None,
+            active: false,
+            source: "test".into(),
+            increment_secs: None,
+        };
+        tracker.ingest_tick(&db, &tick).unwrap();
+        assert_eq!(db.get_allowance_used_today(a.id).unwrap(), 0);
+    }
+
+    #[test]
+    fn exhaustion_blocks_domain() {
+        let db = mk_db();
+        let a = Allowance::new(AllowanceMatch::Domain("reddit.com".into()), 10, false);
+        db.create_allowance(&a).unwrap();
+
+        let tracker = AllowanceTracker::new();
+        let tick = AllowanceTick {
+            url: None,
+            shared_active: false,
+            shared_only: false,
+            hostname: Some("reddit.com".into()),
+            app_exe: None,
+            active: true,
+            source: "test".into(),
+            increment_secs: None,
+        };
+        // 3 ticks of 5s = 15s > 10s limit
+        for _ in 0..3 {
+            tracker.ingest_tick(&db, &tick).unwrap();
+        }
+        assert!(tracker.is_domain_blocked("reddit.com"));
+        assert!(tracker.is_domain_blocked("old.reddit.com"));
+    }
+
+    /// A list blocking reddit and steam, with an allowance for each.
+    fn engine_with_hours(schedule: Option<focuser_common::types::Schedule>) -> BlockEngine {
+        use focuser_common::types::{AppRule, BlockList, WebsiteRule};
+
+        let db = mk_db();
+        for target in [
+            AllowanceMatch::Domain("reddit.com".into()),
+            AllowanceMatch::AppExecutable("steam.exe".into()),
+        ] {
+            db.create_allowance(&Allowance::new(target, 600, false))
+                .unwrap();
+        }
+        let mut list = BlockList::new("Work hours");
+        list.websites.push(WebsiteRule::domain("reddit.com"));
+        list.applications.push(AppRule::executable("steam.exe"));
+        list.schedule = schedule;
+        db.create_block_list(&list).unwrap();
+        BlockEngine::new(db).unwrap()
+    }
+
+    fn all_day(day: chrono::Weekday) -> focuser_common::types::Schedule {
+        focuser_common::types::Schedule {
+            id: uuid::Uuid::new_v4(),
+            name: "Work".into(),
+            time_slots: vec![focuser_common::types::TimeSlot::new(
+                day,
+                chrono::NaiveTime::MIN,
+                chrono::NaiveTime::from_hms_opt(23, 59, 59).unwrap(),
+            )],
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn a_scheduled_list_in_its_hours_beats_the_allowance() {
+        use chrono::Datelike;
+        // #17: set hours are a hard block, whatever budget is left.
+        let engine = engine_with_hours(Some(all_day(Local::now().weekday())));
+        let tracker = AllowanceTracker::new();
+
+        assert!(tracker.active_allowance_domains(&engine).is_empty());
+        assert!(tracker.active_allowance_apps(&engine).is_empty());
+    }
+
+    #[test]
+    fn outside_its_hours_or_with_no_hours_the_allowance_applies() {
+        use chrono::Datelike;
+        let tomorrow = all_day(Local::now().weekday().succ());
+
+        for schedule in [None, Some(tomorrow)] {
+            let engine = engine_with_hours(schedule);
+            let tracker = AllowanceTracker::new();
+
+            assert_eq!(tracker.active_allowance_domains(&engine), ["reddit.com"]);
+            assert_eq!(tracker.active_allowance_apps(&engine), ["steam.exe"]);
+        }
+    }
+
+    #[test]
+    fn subdomain_matches_root() {
+        let m = AllowanceMatch::Domain("youtube.com".into());
+        assert!(m.matches_hostname("youtube.com"));
+        assert!(m.matches_hostname("music.youtube.com"));
+        assert!(m.matches_hostname("www.youtube.com"));
+        assert!(!m.matches_hostname("notyoutube.com"));
+    }
+}

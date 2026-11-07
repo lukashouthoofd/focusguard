@@ -1,0 +1,127 @@
+# FocusGuard browser extension, English.
+#
+# The extension follows the *browser's* language, not the desktop app's setting.
+# That is a limit of `browser.i18n`, which has no way to change locale at
+# runtime. See TRANSLATING.md in the repository root to add a language.
+
+block:
+  blocked: Blocked
+  reason:
+    domain: On a block list
+    keyword: Address contains a blocked word
+    urlPath: This part of the site is blocked
+    wildcard: Matches a blocked pattern
+    everything: Everything is blocked right now
+  attempt:
+    1: First time today
+    n: Attempt $1
+  goBack: Go back
+  closeTab: Close tab
+  pressEsc: Press
+  toGoBack: to go back
+  openApp: Open FocusGuard
+  privacy: Nothing here leaves your computer.
+
+popup:
+  blockingEverything: Blocking everything
+  rulesActive:
+    1: 1 rule active
+    n: $1 rules active
+  on: "On"
+  off: "Off"
+  statToday: Today
+  statSites: Sites
+  statLists: Lists
+  notRunning: Desktop app not running
+  disconnected: Nothing is being blocked. Start the FocusGuard desktop app to restore your rules.
+  noAccessTitle: No access to websites
+  noAccess: FocusGuard needs access to all websites to block them and to reach the desktop app.
+  allowAccess: Allow access
+  currentSite: Current site
+  noSiteOpen: No site open
+  updateApp: Update the app to see this
+  inLists: In {names}
+  notInAnyList: Not in any list
+  unblockEverywhere: Unblock everywhere
+  noBlockList: Create a block list in the desktop app first, there is nowhere to add this site
+  blockThisSite: Block this site
+  blockList: Block list
+  openApp: Open FocusGuard
+  unreachable: Could not reach the desktop app
+  blocked: Blocked {host} in {name}
+  alreadyBlocked: "{host} was already in {name}"
+  notInAnyListNote: "{host} was not in any list"
+  stubborn: Still matched by a {kind} rule in {name}. Edit it in the app.
+  unblocked: Unblocked {host} in {names}
+
+select:
+  placeholder: Select…
+
+welcome:
+  headingUpdated: FocusGuard just got better
+  headingInstalled: Thanks for installing FocusGuard
+  introUpdated: Here is what changed in this version, and a quick reminder of how the pieces fit together.
+  introInstalled: FocusGuard keeps distracting sites out of your way while you work. Here is everything you need to get going.
+
+  setupTitle: One thing to set up
+  setupBody1: The extension does not hold your block lists. It asks the FocusGuard desktop app for them, which is what lets one set of rules cover your browser and your applications at the same time. Keep the app running and the extension looks after the browser side by itself.
+  setupBody2: If the app is closed, the toolbar icon shows a red mark and nothing gets blocked. That is the extension being honest with you rather than pretending to work.
+  openApp: Open the FocusGuard app
+  getApp: Get the desktop app
+
+  incognitoTitle: "Let FocusGuard into private windows"
+  incognitoBody: "{browser} keeps extensions out of private windows unless you let them in, so nothing you open in one is blocked yet. While a block is running, FocusGuard closes {browser} until this is turned on."
+  incognitoStepsChromium: "Open the extension settings and turn on \"{setting}\"."
+  incognitoStepsFirefox: "Open the menu, go to Add-ons and themes, select FocusGuard, and set \"Run in Private Windows\" to Allow."
+  incognitoSettingIncognito: "Allow in Incognito"
+  incognitoSettingInPrivate: "Allow in InPrivate"
+  incognitoSettingPrivate: "Allow in Private"
+  incognitoReloadNote: "Changing it restarts the extension, so this page may close. That is expected."
+  incognitoOpenSettings: "Open extension settings"
+
+  versionBadge: Version {version}
+  whatsNewVersion: What is new in {version}
+  whatsNew: What is new
+
+  new1Title: Rebuilt from scratch
+  new1Body: The extension was rewritten. It is smaller, faster to start, and one codebase now covers Chrome, Edge, Brave and Firefox.
+  new2Title: A block page worth reading
+  new2Body: It names the site, says which rule caught it, and counts how many times you have tried today. The message changes as that count climbs.
+  new3Title: The popup tells the truth
+  new3Body: It now shows which of your lists a site is actually in. Unblocking removes it from all of them instead of guessing at one.
+  new4Title: No flash of the site
+  new4Body: Blocking now takes effect before the page paints, so you never catch a glimpse of the thing you were avoiding.
+
+  point1Title: More than domains
+  point1Body: Match a whole site, a word in the address, a pattern, or one section of a site.
+  point2Title: Only when you meant it
+  point2Body: Lists can follow a weekly schedule or run for one focus session.
+  point3Title: Stays on your machine
+  point3Body: It talks to the FocusGuard app on your own computer and to nothing else.
+
+  waysTitle: The four ways to block something
+  waysIntro: Add these in the desktop app under Websites. The extension enforces all four.
+  waysCaption: Rule types and what each one covers
+  colKind: Kind
+  colExample: Example
+  colCovers: What it covers
+  kindSite: Site
+  kindWord: Word
+  kindPattern: Pattern
+  kindSection: Section
+  coversSite: The site and everything under it
+  coversWord: Any address containing that word
+  coversPattern: Anything matching the pattern
+  coversSection: Just that part of a site
+
+  openSourceTitle: Free, and open source
+  openSourceBody1: FocusGuard is completely open source. Every line of the app and this extension is on GitHub, so you can read exactly what it does, check for yourself that nothing is sent anywhere, and change it if you want to.
+  openSourceBody2: If you want to help, the repository is the place. Pull requests are welcome, and so are bug reports and ideas.
+  star: Star the project
+  reportBug: Report a bug
+  contribute: Contribute code
+  thanks: Thank you for using FocusGuard. Good luck with whatever you are trying to get done.
+  tagline: Made for people who would rather be doing something else.
+locked:
+  title: "Locked for now"
+  body: "A block list is locked, so FocusGuard keeps the browser's extensions page closed. It opens again when the lock ends."

@@ -1,0 +1,117 @@
+# FocusGuard, it.
+#
+# First draft, not reviewed by a native speaker. Corrections welcome:
+# see TRANSLATING.md in the repository root.
+
+block:
+  reason:
+    domain: In un elenco di blocco
+    keyword: L'indirizzo contiene una parola bloccata
+    urlPath: Questa parte del sito è bloccata
+    wildcard: Corrisponde a uno schema bloccato
+    everything: Al momento è tutto bloccato
+  attempt:
+    '1': Prima volta oggi
+    'n': Tentativo $1
+  goBack: Torna indietro
+  closeTab: Chiudi scheda
+  pressEsc: Premi
+  toGoBack: per tornare indietro
+  openApp: Apri FocusGuard
+  privacy: Niente di tutto questo lascia il tuo computer.
+  blocked: Bloccato
+popup:
+  blockingEverything: Blocco totale attivo
+  rulesActive:
+    '1': 1 regola attiva
+    'n': $1 regole attive
+  notRunning: L'app desktop non è in esecuzione
+  disconnected: Non si sta bloccando nulla. Avvia l'app desktop di FocusGuard per ripristinare le tue regole.
+  noAccessTitle: Nessun accesso ai siti web
+  noAccess: FocusGuard ha bisogno di accedere a tutti i siti web per bloccarli e per raggiungere l'app desktop.
+  allowAccess: Consenti l'accesso
+  currentSite: Sito attuale
+  noSiteOpen: Nessun sito aperto
+  updateApp: Aggiorna l'app per vedere questo
+  inLists: In {names}
+  notInAnyList: In nessun elenco
+  unblockEverywhere: Sblocca ovunque
+  noBlockList: Crea prima un elenco di blocco nell'app desktop, non c'è nessun posto dove mettere questo sito
+  blockThisSite: Blocca questo sito
+  blockList: Elenco di blocco
+  openApp: Apri FocusGuard
+  unreachable: Impossibile raggiungere l'app desktop
+  blocked: '{host} bloccato in {name}'
+  alreadyBlocked: '{host} era già in {name}'
+  notInAnyListNote: '{host} non era in nessun elenco'
+  stubborn: Viene ancora intercettato da una regola di tipo {kind} in {name}. Modificala nell'app.
+  unblocked: '{host} sbloccato in {names}'
+  statToday: Oggi
+  statSites: Siti
+  statLists: Elenchi
+  'on': Attivo
+  'off': Inattivo
+select:
+  placeholder: Scegli…
+welcome:
+  headingUpdated: FocusGuard è appena migliorato
+  headingInstalled: Grazie per aver installato FocusGuard
+  introUpdated: Ecco cosa è cambiato in questa versione, con un breve promemoria su come si incastrano i pezzi.
+  introInstalled: FocusGuard tiene fuori dai piedi i siti che distraggono mentre lavori. Ecco tutto il necessario per iniziare.
+  setupTitle: Una cosa da sistemare
+  setupBody1: L'estensione non conserva i tuoi elenchi di blocco. Li chiede all'app desktop di FocusGuard, ed è questo che permette a un unico insieme di regole di coprire browser e applicazioni insieme. Tieni aperta l'app e l'estensione si occupa da sola del browser.
+  setupBody2: Se l'app è chiusa, l'icona nella barra mostra un segno rosso e non viene bloccato nulla. È l'estensione che è onesta con te invece di fingere di funzionare.
+  openApp: Apri l'app FocusGuard
+  getApp: Scarica l'app desktop
+
+  incognitoTitle: "Consenti FocusGuard nelle finestre private"
+  incognitoBody: "{browser} tiene le estensioni fuori dalle finestre private finché non le autorizzi, quindi niente di ciò che apri lì viene ancora bloccato. Mentre un blocco è attivo, FocusGuard chiude {browser} finché non lo attivi."
+  incognitoStepsChromium: "Apri le impostazioni dell'estensione e attiva \"{setting}\"."
+  incognitoStepsFirefox: "Apri il menu, vai su Componenti aggiuntivi e temi, scegli FocusGuard e imposta \"Esegui in finestre anonime\" su Consenti."
+  incognitoSettingIncognito: "Consenti in modalità in incognito"
+  incognitoSettingInPrivate: "Consenti in InPrivate"
+  incognitoSettingPrivate: "Consenti in modalità privata"
+  incognitoReloadNote: "La modifica riavvia l'estensione, quindi questa pagina potrebbe chiudersi. È normale."
+  incognitoOpenSettings: "Apri le impostazioni dell'estensione"
+  whatsNewVersion: Novità della versione {version}
+  whatsNew: Novità
+  new1Title: Ricostruita da zero
+  new1Body: L'estensione è stata riscritta. È più leggera, si avvia più in fretta, e un solo codice copre ora Chrome, Edge, Brave e Firefox.
+  new2Title: Una pagina di blocco che vale la pena leggere
+  new2Body: Nomina il sito, dice quale regola l'ha fermato, e conta quante volte ci hai provato oggi. Il testo cambia man mano che quel numero sale.
+  new3Title: La finestra dice la verità
+  new3Body: Ora mostra in quali dei tuoi elenchi si trova davvero un sito. Sbloccarlo lo toglie da tutti, invece di tirare a indovinare.
+  new4Title: Nessun lampo del sito
+  new4Body: Il blocco scatta prima che la pagina venga disegnata, così non intravedi mai ciò che stavi evitando.
+  point1Title: Più dei domini
+  point1Body: Blocca un sito intero, una parola nell'indirizzo, uno schema, oppure una sola sezione di un sito.
+  point2Title: Solo quando lo vuoi tu
+  point2Body: Gli elenchi possono seguire un orario settimanale o durare una singola sessione di concentrazione.
+  point3Title: Resta sul tuo computer
+  point3Body: Parla con l'app FocusGuard sul tuo computer e con nient'altro.
+  waysTitle: I quattro modi per bloccare qualcosa
+  waysIntro: Aggiungili nell'app desktop, alla voce Siti web. L'estensione li applica tutti e quattro.
+  colKind: Tipo
+  colExample: Esempio
+  colCovers: Cosa copre
+  kindSite: Sito
+  kindWord: Parola
+  kindPattern: Schema
+  kindSection: Sezione
+  coversSite: Il sito e tutto ciò che contiene
+  coversWord: Qualsiasi indirizzo che contenga quella parola
+  coversPattern: Tutto ciò che corrisponde allo schema
+  coversSection: Solo quella parte di un sito
+  openSourceTitle: Gratuito e open source
+  openSourceBody1: FocusGuard è completamente open source. Ogni riga dell'app e di questa estensione è su GitHub, quindi puoi leggere esattamente cosa fa, verificare da solo che non venga inviato niente da nessuna parte, e modificarla se vuoi.
+  openSourceBody2: Se vuoi dare una mano, il repository è il posto giusto. Le pull request sono benvenute, come pure le segnalazioni di bug e le idee.
+  star: Metti una stella al progetto
+  reportBug: Segnala un problema
+  contribute: Contribuisci al codice
+  thanks: Grazie per usare FocusGuard. In bocca al lupo per quello che stai cercando di fare.
+  waysCaption: I tipi di regola e cosa copre ciascuno
+  tagline: Fatto per chi preferirebbe fare altro.
+  versionBadge: Versione {version}
+locked:
+  title: "Bloccato per ora"
+  body: "Un elenco di blocco è bloccato, quindi FocusGuard tiene chiusa la pagina delle estensioni del browser. Si riapre quando il blocco finisce."

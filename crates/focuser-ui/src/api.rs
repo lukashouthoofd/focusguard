@@ -1,0 +1,1926 @@
+//! Local HTTP API server for browser extension communication.
+//!
+//! Listens on 127.0.0.1:17593. The browser extension calls these endpoints
+//! to get blocking rules, add/remove sites, and check domain status.
+//!
+//! Also tracks which browsers have a connected extension via the
+//! `X-FocusGuard-Browser` header sent by the extension on each request.
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use focuser_common::extension::BrowserType;
+use tracing::{debug, error, info};
+
+use crate::AppState;
+use focuser_common::host::{any_host_matches, canonical_host};
+use focuser_common::types::WebsiteMatchType;
+
+/// Flag to request the main window to show itself.
+pub static SHOW_WINDOW_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Flag + browser name for showing "install extension" prompt.
+pub static EXTENSION_PROMPT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Why a browser was closed, so the prompt tells the user the right fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosedReason {
+    /// No extension has ever checked in for this browser.
+    NotInstalled,
+    /// The extension is installed and checking in, but has not been granted
+    /// "Allow in Incognito" — so a private window has no coverage at all.
+    IncognitoNotAllowed,
+}
+
+/// What the prompt about a browser has to say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserPrompt {
+    /// The browser's display name.
+    pub browser: String,
+    pub reason: ClosedReason,
+    /// Seconds until the browser is closed, while there is still time to fix
+    /// it. `None` once it has been closed.
+    pub closing_in_secs: Option<u64>,
+}
+
+/// The prompt waiting to be shown. One slot: the latest thing worth saying.
+static BROWSER_PROMPT: Mutex<Option<BrowserPrompt>> = Mutex::new(None);
+
+/// What one browser's extensions last said.
+#[derive(Debug, Clone)]
+struct BrowserHeartbeat {
+    last_seen: Instant,
+    /// Whether the extension may run in private windows, and when it said so,
+    /// for each profile. A browser runs one copy of the extension per profile,
+    /// and each copy makes up an id for itself and sends it along.
+    ///
+    /// One answer per browser is not enough: two profiles report in turn, the
+    /// answer flips with every heartbeat, and the profile that leaves the gap
+    /// is never held to it.
+    ///
+    /// Empty until an extension reports. One from before this never does, and
+    /// stays trusted as it was, so an app update cannot close a browser whose
+    /// store extension has not updated yet.
+    private_windows: HashMap<String, (Instant, bool)>,
+}
+
+/// A browser has a handful of profiles. More ids than this is something else
+/// talking to the port, and it does not get to grow the map without end.
+const MAX_PROFILES: usize = 16;
+
+impl BrowserHeartbeat {
+    fn new() -> Self {
+        Self {
+            last_seen: Instant::now(),
+            private_windows: HashMap::new(),
+        }
+    }
+
+    /// Note a check-in. `None` is a rules poll, which says nothing about
+    /// private windows and keeps the last real answers.
+    fn record(&mut self, report: Option<(&str, bool)>) {
+        let now = Instant::now();
+        self.last_seen = now;
+        let Some((profile, allowed)) = report else {
+            return;
+        };
+        if !self.private_windows.contains_key(profile) && self.private_windows.len() >= MAX_PROFILES
+        {
+            let stalest = self
+                .private_windows
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(id, _)| id.clone());
+            if let Some(id) = stalest {
+                self.private_windows.remove(&id);
+            }
+        }
+        self.private_windows
+            .insert(profile.to_string(), (now, allowed));
+    }
+
+    fn checked_in_since(&self, since: Instant) -> bool {
+        self.last_seen > since
+    }
+
+    /// Only a profile that said, within `within`, that it cannot see private
+    /// windows leaves a gap. One that has gone quiet drops out.
+    fn covers_private_windows(&self, within: std::time::Duration) -> bool {
+        !self
+            .private_windows
+            .values()
+            .any(|(at, allowed)| !allowed && at.elapsed() < within)
+    }
+}
+
+/// `true` or `false` and nothing else. Unknown is not "no": a stray value must
+/// not get a browser closed.
+fn parse_flag(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Tracks last-seen time and incognito coverage for each browser's extension.
+/// Updated when the extension sends an API request with the `X-FocusGuard-Browser` header,
+/// or hits the dedicated `/api/heartbeat` endpoint.
+static CONNECTED_BROWSERS: Mutex<Option<HashMap<BrowserType, BrowserHeartbeat>>> = Mutex::new(None);
+
+/// Server-side dedup window for blocked reports.
+/// Prevents double-counting from:
+/// - Multi-tab: multiple tabs of the same site reporting nearly simultaneously
+/// - Browser navigation events: onCommitted + onCompleted for the same URL
+/// - Service worker restarts: extension's local dedup state lost
+/// - Chrome retrying failed loads
+static RECENT_REPORTS: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+const REPORT_DEDUP_WINDOW_SECS: u64 = 3;
+
+/// Returns true if this domain should be recorded (not a duplicate of a recent report).
+fn should_record_blocked(tracking_key: &str) -> bool {
+    let now = Instant::now();
+    let mut guard = RECENT_REPORTS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+
+    // Cleanup old entries (keep only recent ones)
+    let window = std::time::Duration::from_secs(REPORT_DEDUP_WINDOW_SECS * 4);
+    map.retain(|_, ts| now.duration_since(*ts) < window);
+
+    if let Some(last) = map.get(tracking_key)
+        && now.duration_since(*last) < std::time::Duration::from_secs(REPORT_DEDUP_WINDOW_SECS)
+    {
+        return false;
+    }
+    map.insert(tracking_key.to_string(), now);
+    true
+}
+
+/// Record that a browser's extension was seen (called from API request handler).
+///
+/// `incognito_allowed` is `None` for the frequent header-based ping, which
+/// carries no such information — only the dedicated heartbeat endpoint
+/// reports it, and a bare rules poll must not erase the last real answer.
+fn record_extension_heartbeat(browser_name: &str, private_windows: Option<(&str, bool)>) {
+    let Some(browser_type) = browser_type_named(browser_name) else {
+        return;
+    };
+
+    let mut guard = CONNECTED_BROWSERS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    map.entry(browser_type)
+        .or_insert_with(BrowserHeartbeat::new)
+        .record(private_windows);
+    debug!(browser = browser_name, "Extension heartbeat recorded");
+}
+
+/// The browser an extension says it runs in.
+fn browser_type_named(name: &str) -> Option<BrowserType> {
+    match name.to_lowercase().as_str() {
+        "chrome" => Some(BrowserType::Chrome),
+        "firefox" => Some(BrowserType::Firefox),
+        "edge" => Some(BrowserType::Edge),
+        "brave" => Some(BrowserType::Brave),
+        "opera" => Some(BrowserType::Opera),
+        _ => None,
+    }
+}
+
+/// Get the set of browsers whose extension was seen within the timeout,
+/// regardless of incognito coverage.
+///
+/// Used for "is the extension doing the blocking, or do we need the hosts
+/// file" — the extension still enforces normal windows fine either way.
+/// For "is it safe to leave this browser running", see
+/// [`get_safely_connected_browsers`].
+pub fn get_connected_browsers(timeout_secs: u64) -> std::collections::HashSet<BrowserType> {
+    connected_browsers_matching(timeout_secs, |_, _| true)
+}
+
+/// Get the set of browsers whose extension was seen within the timeout and
+/// has not reported that "Allow in Incognito" is off.
+///
+/// This is the set that matters for browser enforcement: a browser missing
+/// from here is one where a private window could be open with nothing
+/// blocking it, which is exactly what enforcement exists to catch. An
+/// extension too old to report is given the benefit of the doubt.
+pub fn get_safely_connected_browsers(timeout_secs: u64) -> std::collections::HashSet<BrowserType> {
+    connected_browsers_matching(timeout_secs, BrowserHeartbeat::covers_private_windows)
+}
+
+/// Whether this browser's extension checked in after `since`, with no profile
+/// left out of private windows.
+///
+/// The last look before closing a browser asks this. A check-in from before
+/// its grace period began is the one that went quiet, and counting it kept a
+/// browser open for minutes after its extension was removed (#43).
+pub fn safely_checked_in_since(browser: &BrowserType, since: Instant) -> bool {
+    let guard = CONNECTED_BROWSERS.lock().unwrap();
+    guard
+        .as_ref()
+        .and_then(|map| map.get(browser))
+        .is_some_and(|hb| {
+            hb.checked_in_since(since)
+                && hb.covers_private_windows(std::time::Duration::from_secs(180))
+        })
+}
+
+/// The browser opened the address the extension left for its removal.
+///
+/// Forget the browser, so the hosts file and the grace period start now
+/// instead of after two quiet minutes. Only an id the extension sent before
+/// counts: any web page can open this address, and none knows that id.
+///
+/// ponytail: forgets the whole browser, so with two profiles the one that
+/// still has the extension covers the browser again at its next check-in.
+fn forget_removed_extension(browser_name: &str, profile: &str) {
+    let Some(browser_type) = browser_type_named(browser_name) else {
+        return;
+    };
+    let mut guard = CONNECTED_BROWSERS.lock().unwrap();
+    let Some(map) = guard.as_mut() else {
+        return;
+    };
+    let known = map
+        .get(&browser_type)
+        .is_some_and(|hb| !profile.is_empty() && hb.private_windows.contains_key(profile));
+    if known {
+        map.remove(&browser_type);
+        info!(browser = browser_name, "Extension removed from the browser");
+    }
+}
+
+fn connected_browsers_matching(
+    timeout_secs: u64,
+    predicate: impl Fn(&BrowserHeartbeat, std::time::Duration) -> bool,
+) -> std::collections::HashSet<BrowserType> {
+    let cutoff = std::time::Duration::from_secs(timeout_secs);
+    let now = Instant::now();
+    let guard = CONNECTED_BROWSERS.lock().unwrap();
+
+    match guard.as_ref() {
+        Some(map) => map
+            .iter()
+            .filter(|(_, hb)| now.duration_since(hb.last_seen) < cutoff && predicate(hb, cutoff))
+            .map(|(bt, _)| bt.clone())
+            .collect(),
+        None => std::collections::HashSet::new(),
+    }
+}
+
+/// Bring the window up with a prompt about a browser.
+pub fn prompt_about_browser(prompt: BrowserPrompt) {
+    if let Ok(mut guard) = BROWSER_PROMPT.lock() {
+        *guard = Some(prompt);
+    }
+    EXTENSION_PROMPT_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// Take the waiting prompt (resets it).
+pub fn take_browser_prompt() -> Option<BrowserPrompt> {
+    BROWSER_PROMPT.lock().ok()?.take()
+}
+
+const API_PORT: u16 = 17593;
+
+/// Start the API server. Runs forever — call from a spawned thread.
+pub fn run_api_server(state: Arc<AppState>) {
+    let listener = match TcpListener::bind(format!("127.0.0.1:{API_PORT}")) {
+        Ok(l) => l,
+        Err(e) => {
+            error!(error = %e, port = API_PORT, "Cannot start extension API server");
+            return;
+        }
+    };
+    info!(port = API_PORT, "Extension API server listening");
+    serve(listener, state);
+}
+
+/// Serve on an already-bound listener.
+///
+/// Split out so tests can bind an ephemeral port and drive the real endpoints
+/// over real HTTP — the extension's half of the contract is otherwise only
+/// exercised by installing the extension and watching.
+pub fn serve(listener: TcpListener, state: Arc<AppState>) {
+    for stream in listener.incoming().flatten() {
+        let state = Arc::clone(&state);
+        std::thread::spawn(move || {
+            handle_request(stream, &state);
+        });
+    }
+}
+
+fn handle_request(mut stream: std::net::TcpStream, state: &AppState) {
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+
+    let mut reader = BufReader::new(&stream);
+
+    // Read request line
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+        return;
+    }
+
+    // Read headers, extract Content-Length, extension Origin, and ETag.
+    let mut content_length: usize = 0;
+    let mut focuser_browser: Option<String> = None;
+    let mut if_none_match: Option<String> = None;
+    let mut origin: Option<String> = None;
+    let mut header = String::new();
+    loop {
+        header.clear();
+        if reader.read_line(&mut header).unwrap_or(0) == 0 {
+            break;
+        }
+        if header.trim().is_empty() {
+            break;
+        }
+        if let Some(val) = header.strip_prefix("Content-Length:") {
+            content_length = val.trim().parse().unwrap_or(0);
+        }
+        if let Some(val) = header.strip_prefix("content-length:") {
+            content_length = val.trim().parse().unwrap_or(0);
+        }
+        if let Some((name, value)) = header.split_once(':')
+            && name.trim().eq_ignore_ascii_case("if-none-match")
+        {
+            if_none_match = Some(value.trim().to_string());
+        }
+        if let Some((name, value)) = header.split_once(':')
+            && name.trim().eq_ignore_ascii_case("origin")
+        {
+            origin = Some(value.trim().to_string());
+        }
+        if let Some((name, value)) = header.split_once(':')
+            && name.trim().eq_ignore_ascii_case("x-focusguard-browser")
+        {
+            focuser_browser = Some(value.trim().to_string());
+        }
+    }
+
+    // This loopback API is only for the browser extension. Refusing ordinary
+    // web origins prevents a page on the internet from reading a user's block
+    // lists or issuing mutations through permissive localhost CORS. Local
+    // programs can still connect directly; this is a browser-origin boundary,
+    // not authentication against software running as the same user.
+    let Some(origin) = origin.filter(|value| is_browser_extension_origin(value)) else {
+        let body = r#"{"error":"origin not allowed"}"#;
+        let response = format!(
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        return;
+    };
+
+    // Track connected browser extension. This header rides every /api/rules
+    // poll (every 2s) and carries no incognito info, so only the recency is
+    // updated here — see `record_extension_heartbeat`.
+    if let Some(ref browser_name) = focuser_browser {
+        record_extension_heartbeat(browser_name, None);
+    }
+
+    // Read body if present
+    let mut body = String::new();
+    if content_length > 0 {
+        let mut buf = vec![0u8; content_length];
+        use std::io::Read;
+        let _ = reader.read_exact(&mut buf);
+        body = String::from_utf8_lossy(&buf).to_string();
+    }
+
+    // Parse method and path
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
+    let method = parts.first().copied().unwrap_or("");
+    let path = parts.get(1).copied().unwrap_or("");
+
+    // Route
+    let (status, response_body) = route(method, path, &body, state);
+    let mut extra = String::new();
+    let (status, response_body) = if status.starts_with("302") {
+        // A redirect carries where it goes in place of a body.
+        extra = format!("Location: {response_body}\r\n");
+        (status, String::new())
+    } else if method == "GET" && path == "/api/rules" && status.starts_with("200") {
+        // The extension asks for this every two seconds (#57). The browser
+        // keeps the last answer and asks again with its tag, so an unchanged
+        // list costs a few bytes instead of the whole list each time.
+        let tag = content_tag(&response_body);
+        extra = format!("ETag: {tag}\r\nCache-Control: no-cache\r\n");
+        if if_none_match.as_deref() == Some(tag.as_str()) {
+            ("304 Not Modified", String::new())
+        } else {
+            (status, response_body)
+        }
+    } else {
+        (status, response_body)
+    };
+    // A 304 has no body, and must not claim a length the full answer lacks.
+    let content = if status.starts_with("304") {
+        String::new()
+    } else {
+        format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            response_body.len()
+        )
+    };
+
+    let response = format!(
+        "HTTP/1.1 {status}\r\n\
+         {extra}\
+         {content}\
+         Access-Control-Allow-Origin: {origin}\r\n\
+         Vary: Origin\r\n\
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Content-Type, X-FocusGuard-Browser\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {response_body}"
+    );
+
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+/// Accept only the browser extension origins this app supports.
+///
+/// This does not authenticate an extension against another local process;
+/// it prevents regular websites from receiving CORS access to the API.
+fn is_browser_extension_origin(origin: &str) -> bool {
+    let Some((scheme, host)) = origin.split_once("://") else {
+        return false;
+    };
+    if host.is_empty()
+        || host
+            .bytes()
+            .any(|b| matches!(b, b'/' | b'?' | b'#' | b'@' | b':'))
+    {
+        return false;
+    }
+
+    match scheme.to_ascii_lowercase().as_str() {
+        // Chrome, Edge, Brave and other Chromium extensions use a 32-letter
+        // id in the a-p alphabet. Firefox gives each installed add-on a UUID
+        // origin even when its manifest id is stable.
+        "chrome-extension" => host.len() == 32 && host.bytes().all(|b| (b'a'..=b'p').contains(&b)),
+        "moz-extension" => {
+            host.len() == 36
+                && host.bytes().enumerate().all(|(i, b)| match i {
+                    8 | 13 | 18 | 23 => b == b'-',
+                    _ => b.is_ascii_hexdigit(),
+                })
+        }
+        _ => false,
+    }
+}
+
+/// A tag for a response body. The same body always gets the same tag.
+fn content_tag(body: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut hasher);
+    format!("\"{:016x}\"", hasher.finish())
+}
+
+fn route(method: &str, path: &str, body: &str, state: &AppState) -> (&'static str, String) {
+    // Handle CORS preflight
+    if method == "OPTIONS" {
+        return ("204 No Content", String::new());
+    }
+
+    match (method, path) {
+        ("GET", "/api/status") => api_status(state),
+        ("GET", "/api/lists") => api_lists(state),
+        ("GET", "/api/rules") => api_rules(state),
+        ("POST", "/api/add-site") => api_add_site(body, state),
+        ("POST", "/api/remove-site") => api_remove_site(body, state),
+        ("POST", "/api/toggle-list") => api_toggle_list(body, state),
+        ("POST", "/api/blocked") => api_report_blocked(body, state),
+        ("POST", "/api/allowance-tick") => api_allowance_tick(body, state),
+        ("GET", "/api/allowance-blocked") => api_allowance_blocked(state),
+        ("GET", "/api/pomodoro") => api_pomodoro_status(state),
+        ("GET", "/api/allowances") => api_allowances_list(state),
+        ("POST", "/api/show") | ("GET", "/api/show") => {
+            SHOW_WINDOW_REQUESTED.store(true, Ordering::Relaxed);
+            ("200 OK", r#"{"ok":true}"#.into())
+        }
+        _ if path.starts_with("/api/site-status?") => {
+            api_site_status(path.split_once('?').map(|(_, q)| q).unwrap_or(""), state)
+        }
+        _ if path.starts_with("/api/check?") => api_check_domain(path, state),
+        _ if path.starts_with("/api/blocked-count?") => api_blocked_count(path, state),
+        _ if path.starts_with("/api/heartbeat?") => {
+            // Dedicated heartbeat endpoint — browser identified via URL, not headers
+            let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            let browser = query_param(query, "browser").unwrap_or("");
+            let allowed = query_param(query, "incognito_allowed").and_then(parse_flag);
+            let profile = query_param(query, "profile").unwrap_or("");
+            if !browser.is_empty() {
+                record_extension_heartbeat(browser, allowed.map(|allowed| (profile, allowed)));
+            }
+            ("200 OK", r#"{"ok":true}"#.into())
+        }
+        _ if path.starts_with("/api/extension-removed?") => {
+            let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            let browser = query_param(query, "browser").unwrap_or("");
+            forget_removed_extension(browser, query_param(query, "profile").unwrap_or(""));
+            let store = match browser_type_named(browser) {
+                Some(BrowserType::Firefox) => focuser_common::browser::FIREFOX_STORE_URL,
+                _ => focuser_common::browser::CHROME_STORE_URL,
+            };
+            // The browser shows this in a new tab. Send it on to the store.
+            ("302 Found", store.into())
+        }
+        _ => ("404 Not Found", r#"{"error":"not found"}"#.into()),
+    }
+}
+
+fn api_status(state: &AppState) -> (&'static str, String) {
+    let eng = state.engine.lock().unwrap();
+    let lists = eng.block_lists();
+    let active_count = lists.iter().filter(|l| l.enabled).count();
+    let total_sites: usize = lists
+        .iter()
+        .filter(|l| l.enabled)
+        .map(|l| l.websites.len())
+        .sum();
+    let total_apps: usize = lists
+        .iter()
+        .filter(|l| l.enabled)
+        .map(|l| l.applications.len())
+        .sum();
+    let blocked_today = eng.db().get_total_blocked_today().unwrap_or(0);
+
+    let json = serde_json::json!({
+        "running": true,
+        "active_lists": active_count,
+        "blocked_sites": total_sites,
+        "blocked_apps": total_apps,
+        "blocked_today": blocked_today,
+    });
+    ("200 OK", json.to_string())
+}
+
+fn api_lists(state: &AppState) -> (&'static str, String) {
+    let eng = state.engine.lock().unwrap();
+    let lists: Vec<serde_json::Value> = eng
+        .block_lists()
+        .iter()
+        .map(|l| {
+            serde_json::json!({
+                "id": l.id.to_string(),
+                "name": l.name,
+                "enabled": l.enabled,
+                "website_count": l.websites.len(),
+                "app_count": l.applications.len(),
+            })
+        })
+        .collect();
+    ("200 OK", serde_json::to_string(&lists).unwrap_or_default())
+}
+
+fn api_rules(state: &AppState) -> (&'static str, String) {
+    let eng = state.engine.lock().unwrap();
+    let allowance_exceptions = state.allowance_exempt_domains(&eng);
+    let mut rules = eng.compile_extension_rules_with_allowances(
+        &allowance_exceptions,
+        &spent_domains(state, &eng),
+    );
+    // `locked` only tells the extension to keep the extensions page shut, so
+    // with that turned off it is never sent.
+    rules.locked &= guards_extensions_page(eng.db());
+
+    let mut domain_categories: HashMap<String, String> = HashMap::new();
+    for list in eng.block_lists().iter().filter(|l| l.enabled) {
+        let category = normalize_category(&list.name);
+        for rule in &list.websites {
+            if let focuser_common::types::WebsiteMatchType::Domain(ref d) = rule.match_type {
+                domain_categories.insert(canonical_host(d), category.clone());
+            }
+        }
+    }
+
+    let mut response = serde_json::to_value(&rules).unwrap_or_default();
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert(
+            "domain_categories".to_string(),
+            serde_json::to_value(&domain_categories).unwrap_or_default(),
+        );
+    }
+
+    ("200 OK", response.to_string())
+}
+
+fn guards_extensions_page(db: &focuser_core::db::Database) -> bool {
+    db.get_setting_or_default(focuser_app::execute::SETTING_GUARD_EXTENSIONS_PAGE, "true")
+        .map_or(true, |v| v != "false")
+}
+
+fn normalize_category(list_name: &str) -> String {
+    let name = list_name.to_lowercase();
+    for (keyword, category) in [
+        ("porn", "adult"),
+        ("adult", "adult"),
+        ("nsfw", "adult"),
+        ("xxx", "adult"),
+        ("social", "social_media"),
+        ("instagram", "social_media"),
+        ("facebook", "social_media"),
+        ("twitter", "social_media"),
+        ("tiktok", "social_media"),
+        ("video", "video"),
+        ("stream", "video"),
+        ("youtube", "video"),
+        ("netflix", "video"),
+        ("entertain", "video"),
+        ("dating", "dating"),
+        ("tinder", "dating"),
+        ("bumble", "dating"),
+        ("gaming", "gaming"),
+        ("game", "gaming"),
+        ("steam", "gaming"),
+        ("news", "news"),
+        ("reddit", "news"),
+        ("forum", "news"),
+        ("shop", "shopping"),
+        ("amazon", "shopping"),
+        ("ebay", "shopping"),
+        ("gambling", "gambling"),
+        ("betting", "gambling"),
+        ("casino", "gambling"),
+    ] {
+        if name.contains(keyword) {
+            return category.to_string();
+        }
+    }
+    "default".to_string()
+}
+
+fn api_check_domain(path: &str, state: &AppState) -> (&'static str, String) {
+    let domain = path
+        .split("domain=")
+        .nth(1)
+        .unwrap_or("")
+        .split('&')
+        .next()
+        .unwrap_or("");
+
+    let eng = state.engine.lock().unwrap();
+    let exemptions = state.allowance_exempt_domains(&eng);
+    let blocked = if any_host_matches(&exemptions, domain) && !eng.scheduled_block_on_domain(domain)
+    {
+        false
+    } else {
+        eng.check_domain(domain).is_some() || any_host_matches(spent_domains(state, &eng), domain)
+    };
+    let json = serde_json::json!({ "domain": domain, "blocked": blocked });
+    ("200 OK", json.to_string())
+}
+
+fn api_add_site(body: &str, state: &AppState) -> (&'static str, String) {
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+
+    let list_id = parsed["list_id"].as_str().unwrap_or("");
+    let domain = parsed["domain"].as_str().unwrap_or("");
+    let rule_type = parsed["rule_type"].as_str().unwrap_or("domain");
+
+    if list_id.is_empty() || domain.is_empty() {
+        return (
+            "400 Bad Request",
+            r#"{"error":"list_id and domain required"}"#.into(),
+        );
+    }
+
+    let uuid = match uuid::Uuid::parse_str(list_id) {
+        Ok(u) => u,
+        Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+
+    let mut eng = state.engine.lock().unwrap();
+    // No lock check: a new site only blocks more, so a locked list takes one.
+    let mut list = match eng.db().get_block_list(uuid) {
+        Ok(l) => l,
+        Err(e) => return ("404 Not Found", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+
+    use focuser_common::types::WebsiteRule;
+    let rule = match rule_type {
+        "keyword" => WebsiteRule::keyword(domain),
+        "wildcard" => WebsiteRule::wildcard(domain),
+        "url_path" => WebsiteRule::url_path(domain),
+        _ => WebsiteRule::domain(domain),
+    };
+
+    // Adding the same site twice used to create a second identical rule, which
+    // is invisible in the popup and has to be deleted twice in the app.
+    let already = list
+        .websites
+        .iter()
+        .any(|existing| existing.match_type == rule.match_type);
+    if already {
+        return (
+            "200 OK",
+            serde_json::json!({ "ok": true, "added": 0, "duplicate": true }).to_string(),
+        );
+    }
+
+    list.websites.push(rule);
+    list.updated_at = chrono::Utc::now();
+
+    if let Err(e) = eng.db().update_block_list(&list) {
+        return (
+            "500 Internal Server Error",
+            format!(r#"{{"error":"{}"}}"#, e),
+        );
+    }
+    let _ = eng.refresh();
+    state.sync_hosts(&eng);
+
+    (
+        "200 OK",
+        serde_json::json!({ "ok": true, "added": 1, "duplicate": false }).to_string(),
+    )
+}
+
+fn api_remove_site(body: &str, state: &AppState) -> (&'static str, String) {
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+
+    let list_id = parsed["list_id"].as_str().unwrap_or("");
+    let rule_id = parsed["rule_id"].as_str().unwrap_or("");
+    let domain = parsed["domain"].as_str().unwrap_or("");
+
+    // Support removal by rule_id OR by domain name
+    if list_id.is_empty() || (rule_id.is_empty() && domain.is_empty()) {
+        return (
+            "400 Bad Request",
+            r#"{"error":"list_id and (rule_id or domain) required"}"#.into(),
+        );
+    }
+
+    let uuid = match uuid::Uuid::parse_str(list_id) {
+        Ok(u) => u,
+        Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+
+    let mut eng = state.engine.lock().unwrap();
+    let mut list = match eng.db().get_block_list(uuid) {
+        Ok(l) => l,
+        Err(e) => return ("404 Not Found", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+    if list.is_modification_protected() || eng.is_block_list_protected(uuid) {
+        return (
+            "403 Forbidden",
+            serde_json::json!({"error": "protected"}).to_string(),
+        );
+    }
+
+    let before = list.websites.len();
+    let mut left_behind = 0usize;
+
+    if !rule_id.is_empty() {
+        list.websites.retain(|r| r.id.to_string() != rule_id);
+    } else if !domain.is_empty() {
+        let domain_lower = domain.to_lowercase();
+        list.websites.retain(|rule| {
+            if !rule.matches_domain(&domain_lower) {
+                return true;
+            }
+            // Only rules that are *about* this host go. A keyword like "tube"
+            // matches youtube.com but belongs to the user's wider intent, so it
+            // is reported back instead of being deleted behind their back.
+            match rule.match_type {
+                WebsiteMatchType::Domain(_) | WebsiteMatchType::Wildcard(_) => false,
+                _ => {
+                    left_behind += 1;
+                    true
+                }
+            }
+        });
+    }
+
+    let removed = before - list.websites.len();
+    list.updated_at = chrono::Utc::now();
+
+    if let Err(e) = eng.db().update_block_list(&list) {
+        return (
+            "500 Internal Server Error",
+            format!(r#"{{"error":"{}"}}"#, e),
+        );
+    }
+    let _ = eng.refresh();
+    state.sync_hosts(&eng);
+
+    // `removed` matters: removing nothing used to answer "ok" exactly like a
+    // real removal, so the popup reported success while the site stayed blocked.
+    (
+        "200 OK",
+        serde_json::json!({ "ok": true, "removed": removed, "left_behind": left_behind })
+            .to_string(),
+    )
+}
+
+/// Which lists hold a rule for this host, so a caller can say where a site is
+/// blocked rather than making the user guess.
+fn api_site_status(query: &str, state: &AppState) -> (&'static str, String) {
+    let domain = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("domain="))
+        .map(|raw| percent_decode(raw).to_lowercase())
+        .unwrap_or_default();
+
+    if domain.is_empty() {
+        return ("400 Bad Request", r#"{"error":"domain required"}"#.into());
+    }
+
+    let eng = state.engine.lock().unwrap();
+    let lists: Vec<serde_json::Value> = eng
+        .block_lists()
+        .iter()
+        .filter_map(|list| {
+            // Rule presence, not `should_block_domain`: a disabled list still
+            // holds the site, and that is what the caller needs to act on.
+            let matched = list
+                .websites
+                .iter()
+                .find(|rule| rule.enabled && rule.matches_domain(&domain))?;
+            Some(serde_json::json!({
+                "id": list.id.to_string(),
+                "name": list.name,
+                "enabled": list.enabled,
+                "rule_kind": match matched.match_type {
+                    WebsiteMatchType::Domain(_) => "domain",
+                    WebsiteMatchType::Wildcard(_) => "wildcard",
+                    WebsiteMatchType::Keyword(_) => "keyword",
+                    WebsiteMatchType::UrlPath(_) => "url_path",
+                    WebsiteMatchType::EntireInternet => "everything",
+                },
+            }))
+        })
+        .collect();
+
+    let blocked = eng.check_domain(&domain).is_some();
+    (
+        "200 OK",
+        serde_json::json!({ "domain": domain, "blocked": blocked, "lists": lists }).to_string(),
+    )
+}
+
+fn api_report_blocked(body: &str, state: &AppState) -> (&'static str, String) {
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+
+    let domain = parsed["domain"].as_str().unwrap_or("");
+    if domain.is_empty() {
+        return ("400 Bad Request", r#"{"error":"domain required"}"#.into());
+    }
+
+    let tracking_key = parsed["tracking_key"].as_str().unwrap_or(domain);
+
+    // Server-side dedup: only record if this exact tracking_key wasn't recorded
+    // within the last REPORT_DEDUP_WINDOW_SECS seconds. This handles multi-tab,
+    // navigation redirects, service worker restarts, and duplicate event sources.
+    let recorded = should_record_blocked(tracking_key);
+
+    let eng = state.engine.lock().unwrap();
+
+    if recorded {
+        let _ = eng.record_blocked(domain);
+        if tracking_key != domain {
+            let _ = eng.db().record_blocked_attempt(tracking_key);
+        }
+    }
+
+    // Always return the current count (whether or not we just incremented).
+    let count = if tracking_key != domain {
+        eng.db().get_blocked_count_today(tracking_key).unwrap_or(0)
+    } else {
+        eng.db().get_blocked_count_today(domain).unwrap_or(0)
+    };
+
+    let json = serde_json::json!({ "ok": true, "count": count, "recorded": recorded });
+    ("200 OK", json.to_string())
+}
+
+fn api_blocked_count(path: &str, state: &AppState) -> (&'static str, String) {
+    let key = path
+        .split("key=")
+        .nth(1)
+        .unwrap_or("")
+        .split('&')
+        .next()
+        .unwrap_or("");
+    let decoded = percent_decode(key);
+    let eng = state.engine.lock().unwrap();
+    let count = eng.db().get_blocked_count_today(&decoded).unwrap_or(0);
+    let json = serde_json::json!({ "key": decoded, "count": count });
+    ("200 OK", json.to_string())
+}
+
+/// Pull one `key=value` pair out of a query string, unescaped only in the
+/// sense of stopping at `&` — callers that need percent-decoding still do
+/// that themselves, matching every other query-parsing site in this file.
+fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    for pair in query.split('&') {
+        if let Some(value) = pair.strip_prefix(key).and_then(|v| v.strip_prefix('=')) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(h) = std::str::from_utf8(&bytes[i + 1..i + 3])
+            && let Ok(byte) = u8::from_str_radix(h, 16)
+        {
+            out.push(byte);
+            i += 3;
+            continue;
+        }
+        if bytes[i] == b'+' {
+            out.push(b' ');
+        } else {
+            out.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn api_toggle_list(body: &str, state: &AppState) -> (&'static str, String) {
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+
+    let list_id = parsed["list_id"].as_str().unwrap_or("");
+    let enabled = parsed["enabled"].as_bool().unwrap_or(true);
+
+    let uuid = match uuid::Uuid::parse_str(list_id) {
+        Ok(u) => u,
+        Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+
+    let mut eng = state.engine.lock().unwrap();
+    let mut list = match eng.db().get_block_list(uuid) {
+        Ok(l) => l,
+        Err(e) => return ("404 Not Found", format!(r#"{{"error":"{}"}}"#, e)),
+    };
+    if list.is_modification_protected() || eng.is_block_list_protected(uuid) {
+        return (
+            "403 Forbidden",
+            serde_json::json!({"error": "protected"}).to_string(),
+        );
+    }
+
+    list.enabled = enabled;
+    list.updated_at = chrono::Utc::now();
+
+    if let Err(e) = eng.db().update_block_list(&list) {
+        return (
+            "500 Internal Server Error",
+            format!(r#"{{"error":"{}"}}"#, e),
+        );
+    }
+    let _ = eng.refresh();
+    state.sync_hosts(&eng);
+
+    ("200 OK", r#"{"ok":true}"#.into())
+}
+
+fn api_allowance_tick(body: &str, state: &AppState) -> (&'static str, String) {
+    let tick: focuser_common::allowance::AllowanceTick = match serde_json::from_str(body) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::debug!(error = %e, body = %body, "bad allowance-tick payload");
+            return ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#));
+        }
+    };
+    let eng = match state.engine.lock() {
+        Ok(e) => e,
+        Err(_) => return ("500 Internal Server Error", r#"{"error":"lock"}"#.into()),
+    };
+    if let Err(e) = state.allowance_tracker.ingest_tick(eng.db(), &tick) {
+        tracing::warn!(error = %e, "allowance-tick ingest failed");
+        return ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#));
+    }
+    tracing::debug!(
+        host = ?tick.hostname,
+        app = ?tick.app_exe,
+        active = tick.active,
+        inc = ?tick.increment_secs,
+        "allowance tick ingested"
+    );
+    ("200 OK", r#"{"ok":true}"#.into())
+}
+
+/// Sites whose allowance is used up for today. A running shared allowance
+/// takes over the ones it covers.
+fn spent_domains(state: &AppState, eng: &focuser_core::BlockEngine) -> Vec<String> {
+    state
+        .allowance_tracker
+        .blocked_domains()
+        .into_iter()
+        .filter(|d| !eng.shared_covers_domain(d))
+        .collect()
+}
+
+fn api_allowance_blocked(state: &AppState) -> (&'static str, String) {
+    let eng = state.engine.lock().unwrap();
+    let domains = spent_domains(state, &eng);
+    let apps: Vec<_> = state
+        .allowance_tracker
+        .blocked_apps()
+        .into_iter()
+        .filter(|a| !eng.shared_covers_app(a))
+        .collect();
+    let json = serde_json::json!({ "domains": domains, "apps": apps });
+    ("200 OK", json.to_string())
+}
+
+fn api_pomodoro_status(state: &AppState) -> (&'static str, String) {
+    let eng = match state.engine.lock() {
+        Ok(e) => e,
+        Err(_) => return ("500 Internal Server Error", r#"{"error":"lock"}"#.into()),
+    };
+    match focuser_core::pomodoro::build_status(eng.db()) {
+        Ok(Some(s)) => (
+            "200 OK",
+            serde_json::to_string(&s).unwrap_or_else(|_| "null".into()),
+        ),
+        Ok(None) => ("200 OK", "null".into()),
+        Err(e) => ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+fn api_allowances_list(state: &AppState) -> (&'static str, String) {
+    let eng = match state.engine.lock() {
+        Ok(e) => e,
+        Err(_) => return ("500 Internal Server Error", r#"{"error":"lock"}"#.into()),
+    };
+    match eng.db().allowance_statuses_with_shared() {
+        Ok(list) => (
+            "200 OK",
+            serde_json::to_string(&list).unwrap_or_else(|_| "[]".into()),
+        ),
+        Err(e) => ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Drives the real extension endpoints over real HTTP.
+    //!
+    //! This is the half of the allowance feature that used to be verifiable
+    //! only by installing the extension and watching a number fail to move.
+    //! The requests below are byte-for-byte what `background.js` sends.
+
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+
+    use focuser_app::AppContext;
+    use focuser_common::allowance::AllowanceMatch;
+    use focuser_common::types::{BlockList, ExceptionRule, WebsiteRule};
+    use focuser_core::{BlockEngine, Database};
+
+    /// A context that reports a connected extension, since that is the state
+    /// any request to these endpoints implies.
+    fn ctx_with_extension(setup: impl FnOnce(&Database)) -> Arc<AppContext> {
+        struct Connected;
+        impl focuser_app::SystemSync for Connected {
+            fn sync_hosts(&self, _domains: &[String]) {}
+            fn connected_browsers(&self) -> Vec<String> {
+                vec!["Chrome".to_string()]
+            }
+        }
+
+        let db = Database::open_in_memory().unwrap();
+        setup(&db);
+        let engine = BlockEngine::new(db).unwrap();
+        Arc::new(AppContext::new(engine, Arc::new(Connected)))
+    }
+
+    /// Start the server on an ephemeral port and return its address.
+    fn start(state: Arc<AppContext>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || super::serve(listener, state));
+        addr
+    }
+
+    fn request(addr: &str, method: &str, path: &str, body: Option<&str>) -> String {
+        let mut stream = std::net::TcpStream::connect(addr).unwrap();
+        let body = body.unwrap_or("");
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nOrigin: chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b.to_string())
+            .unwrap_or(response)
+    }
+
+    fn tick(addr: &str, hostname: &str, seconds: u32) -> String {
+        // Exactly the payload background.js posts.
+        let body = format!(
+            r#"{{"hostname":"{hostname}","app_exe":null,"active":true,\
+               "source":"extension-tick","increment_secs":{seconds}}}"#
+        )
+        .replace("\\\n               ", "");
+        request(addr, "POST", "/api/allowance-tick", Some(&body))
+    }
+
+    fn used_secs(state: &AppContext) -> u32 {
+        let eng = state.engine.lock().unwrap();
+        let allowances = eng.db().list_allowances().unwrap();
+        eng.db().get_allowance_used_today(allowances[0].id).unwrap()
+    }
+
+    #[test]
+    fn scheduled_lock_guards_extension_mutations_and_relock() {
+        use chrono::Datelike;
+        use focuser_common::types::{Lock, Schedule, ScheduledProtection, TimeSlot, new_id};
+        let mut list = BlockList::new("Scheduled");
+        list.websites.push(WebsiteRule::domain("example.com"));
+        list.schedule = Some(Schedule {
+            id: new_id(),
+            name: "Today".into(),
+            enabled: true,
+            time_slots: vec![TimeSlot::new(
+                chrono::Local::now().weekday(),
+                chrono::NaiveTime::MIN,
+                chrono::NaiveTime::MIN,
+            )],
+        });
+        list.scheduled_protection = Some(ScheduledProtection {
+            lock: Some(Lock::password("secret").unwrap()),
+        });
+        let state = ctx_with_extension(|db| {
+            db.create_block_list(&list).unwrap();
+        });
+        let body = serde_json::json!({"list_id": list.id, "domain":"example.com", "enabled":false})
+            .to_string();
+        let attempt = || {
+            assert_eq!(super::api_remove_site(&body, &state).0, "403 Forbidden");
+            assert_eq!(super::api_toggle_list(&body, &state).0, "403 Forbidden");
+        };
+        attempt();
+        focuser_app::execute(
+            &state,
+            focuser_app::Command::UnlockProtection {
+                list_id: list.id,
+                response: "secret".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(super::api_remove_site(&body, &state).0, "200 OK");
+        assert_eq!(super::api_add_site(&body, &state).0, "200 OK");
+        focuser_app::execute(
+            &state,
+            focuser_app::Command::RelockScheduledProtection { list_id: list.id },
+        )
+        .unwrap();
+        attempt();
+    }
+
+    #[test]
+    fn a_tick_increments_the_matching_allowance_whichever_www_form_it_reports() {
+        for stored in ["youtube.com", "www.youtube.com"] {
+            let state = ctx_with_extension(|db| {
+                db.create_allowance(&focuser_common::allowance::Allowance::new(
+                    AllowanceMatch::Domain(stored.into()),
+                    1800,
+                    true,
+                ))
+                .unwrap();
+            });
+            let addr = start(Arc::clone(&state));
+
+            assert_eq!(used_secs(&state), 0, "starts at zero");
+
+            for reported in ["youtube.com", "www.youtube.com", "music.youtube.com"] {
+                tick(&addr, reported, 5);
+            }
+
+            assert_eq!(
+                used_secs(&state),
+                15,
+                "allowance stored as {stored:?} should count every form"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tick_for_an_unrelated_site_counts_nothing() {
+        let state = ctx_with_extension(|db| {
+            db.create_allowance(&focuser_common::allowance::Allowance::new(
+                AllowanceMatch::Domain("youtube.com".into()),
+                1800,
+                true,
+            ))
+            .unwrap();
+        });
+        let addr = start(Arc::clone(&state));
+
+        tick(&addr, "example.com", 30);
+        tick(&addr, "notyoutube.com", 30);
+
+        assert_eq!(used_secs(&state), 0);
+    }
+
+    #[test]
+    fn usage_accumulates_until_the_limit_then_the_site_is_blocked() {
+        let state = ctx_with_extension(|db| {
+            let mut list = BlockList::new("Videos");
+            list.websites.push(WebsiteRule::domain("youtube.com"));
+            db.create_block_list(&list).unwrap();
+            db.create_allowance(&focuser_common::allowance::Allowance::new(
+                AllowanceMatch::Domain("www.youtube.com".into()),
+                60,
+                true,
+            ))
+            .unwrap();
+        });
+        let addr = start(Arc::clone(&state));
+
+        // Under the limit: reachable, because the allowance exempts it.
+        let body = request(&addr, "GET", "/api/check?domain=www.youtube.com", None);
+        assert!(
+            body.contains(r#""blocked":false"#),
+            "should be reachable while the budget lasts, got {body}"
+        );
+
+        // Burn the whole minute.
+        for _ in 0..2 {
+            tick(&addr, "www.youtube.com", 30);
+        }
+        assert_eq!(used_secs(&state), 60);
+
+        // Exhausted: blocked again, in either form.
+        for host in ["youtube.com", "www.youtube.com"] {
+            let body = request(&addr, "GET", &format!("/api/check?domain={host}"), None);
+            assert!(
+                body.contains(r#""blocked":true"#),
+                "{host} should be blocked once the budget is spent, got {body}"
+            );
+        }
+    }
+
+    /// The Allowances page says a site is "blocked for the rest of the day"
+    /// once its budget is used. For a site on no block list nothing carried
+    /// that out while an extension was connected: only the hosts file was ever
+    /// told, and the hosts file is cleared when an extension connects.
+    #[test]
+    fn a_site_on_no_list_is_blocked_once_its_allowance_is_spent() {
+        let state = ctx_with_extension(|db| {
+            db.create_allowance(&focuser_common::allowance::Allowance::new(
+                AllowanceMatch::Domain("youtube.com".into()),
+                60,
+                true,
+            ))
+            .unwrap();
+        });
+        let addr = start(Arc::clone(&state));
+        let blocked_domains = || {
+            let rules: serde_json::Value =
+                serde_json::from_str(&request(&addr, "GET", "/api/rules", None)).unwrap();
+            rules["blocked_domains"].clone()
+        };
+
+        assert_eq!(blocked_domains(), serde_json::json!([]));
+
+        for _ in 0..2 {
+            tick(&addr, "www.youtube.com", 30);
+        }
+
+        assert_eq!(
+            blocked_domains(),
+            serde_json::json!(["www.youtube.com", "youtube.com"])
+        );
+        let body = request(&addr, "GET", "/api/check?domain=www.youtube.com", None);
+        assert!(body.contains(r#""blocked":true"#), "got {body}");
+    }
+
+    #[test]
+    fn strict_mode_ignores_a_tick_from_an_unfocused_tab() {
+        let state = ctx_with_extension(|db| {
+            db.create_allowance(&focuser_common::allowance::Allowance::new(
+                AllowanceMatch::Domain("youtube.com".into()),
+                1800,
+                true,
+            ))
+            .unwrap();
+        });
+        let addr = start(Arc::clone(&state));
+
+        request(
+            &addr,
+            "POST",
+            "/api/allowance-tick",
+            Some(r#"{"hostname":"youtube.com","app_exe":null,"active":false,"increment_secs":30}"#),
+        );
+
+        assert_eq!(used_secs(&state), 0, "strict mode only counts focused time");
+    }
+
+    #[test]
+    fn a_locked_list_cannot_be_changed_through_the_extension_api() {
+        let mut list = BlockList::new("Deep Work");
+        list.websites.push(WebsiteRule::domain("youtube.com"));
+        let now = chrono::Utc::now();
+        list.protection = Some(focuser_common::types::Protection {
+            prevent_uninstall: false,
+            prevent_service_stop: false,
+            prevent_modification: true,
+            started_at: now,
+            expires_at: Some(now + chrono::Duration::hours(1)),
+        });
+        let state = ctx_with_extension(|db| db.create_block_list(&list).unwrap());
+        let body =
+            serde_json::json!({"list_id": list.id, "domain": "youtube.com", "enabled": false})
+                .to_string();
+
+        // 0.8.0 answered 200 to all of these, so one request to this port
+        // switched a locked list off.
+        assert_eq!(super::api_toggle_list(&body, &state).0, "403 Forbidden");
+        assert_eq!(super::api_remove_site(&body, &state).0, "403 Forbidden");
+
+        // Adding a site only blocks more, so the popup can still do it.
+        let add = serde_json::json!({"list_id": list.id, "domain": "x.example"}).to_string();
+        assert_eq!(super::api_add_site(&add, &state).0, "200 OK");
+
+        let engine = state.engine.lock().unwrap();
+        let stored = engine.db().get_block_list(list.id).unwrap();
+        assert!(stored.enabled, "the locked list was switched off");
+        assert_eq!(stored.websites.len(), 2, "youtube.com was removed");
+    }
+
+    // A hosts file cannot express these, so this endpoint is the only way they
+    // ever reach anything that enforces them.
+    #[test]
+    fn shared_allowance_api_preserves_scopes_pauses_individuals_and_exhausts() {
+        use chrono::Datelike;
+        use focuser_common::types::{Schedule, TimeSlot};
+        let state = ctx_with_extension(|db| {
+            let mut list = BlockList::new("Shared");
+            list.websites.push(WebsiteRule::domain("youtube.com"));
+            // Running now, and into tomorrow in case the test crosses midnight.
+            let today = chrono::Local::now().weekday();
+            list.schedule = Some(Schedule {
+                id: list.id,
+                name: "Today".into(),
+                enabled: true,
+                time_slots: [today, today.succ()]
+                    .into_iter()
+                    .map(|d| TimeSlot::new(d, chrono::NaiveTime::MIN, chrono::NaiveTime::MIN))
+                    .collect(),
+            });
+            list.shared_allowance =
+                Some(focuser_common::allowance::SharedAllowanceConfig { minutes: 1 });
+            db.create_block_list(&list).unwrap();
+            db.create_allowance(&focuser_common::allowance::Allowance::new(
+                AllowanceMatch::Domain("youtube.com".into()),
+                600,
+                true,
+            ))
+            .unwrap();
+        });
+        let rules: serde_json::Value = serde_json::from_str(&super::api_rules(&state).1).unwrap();
+        assert_eq!(rules["scopes"][0]["shared_permits"], true);
+        assert!(rules["allowed_domains"].as_array().unwrap().is_empty());
+        assert!(
+            rules["blocked_domains"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d == "youtube.com"),
+            "old extension fallback stays blocked"
+        );
+        let result = super::api_allowance_tick(
+            r#"{"hostname":"youtube.com","url":"https://youtube.com/watch","active":true,"shared_active":true,"shared_only":true,"increment_secs":60,"source":"test"}"#,
+            &state,
+        );
+        assert_eq!(result.0, "200 OK");
+        assert_eq!(used_secs(&state), 0);
+        let rules: serde_json::Value = serde_json::from_str(&super::api_rules(&state).1).unwrap();
+        assert_eq!(rules["scopes"][0]["shared_permits"], false);
+        let eng = state.engine.lock().unwrap();
+        assert_eq!(eng.check_domain("youtube.com"), Some("Shared"));
+        assert!(eng.db().allowance_statuses_with_shared().unwrap()[0].paused_by_shared);
+    }
+
+    #[test]
+    fn compiled_rules_carry_the_extension_only_kinds() {
+        let state = ctx_with_extension(|db| {
+            let mut list = BlockList::new("Patterns");
+            list.websites.push(WebsiteRule::wildcard("*.reddit.com"));
+            list.websites.push(WebsiteRule::keyword("casino"));
+            list.websites.push(WebsiteRule::url_path("/r/gaming"));
+            list.exceptions
+                .push(ExceptionRule::wildcard("*.docs.reddit.com"));
+            db.create_block_list(&list).unwrap();
+        });
+        let addr = start(Arc::clone(&state));
+
+        let body = request(&addr, "GET", "/api/rules", None);
+        let rules: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        for (field, value) in [
+            ("blocked_wildcards", "*.reddit.com"),
+            ("blocked_keywords", "casino"),
+            ("blocked_url_paths", "/r/gaming"),
+            ("allowed_wildcards", "*.docs.reddit.com"),
+        ] {
+            let served = rules[field].as_array().unwrap();
+            assert!(
+                served.iter().any(|v| v == value),
+                "{field} should list {value}: {served:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiled_rules_carry_both_www_forms_for_blocks_and_exemptions() {
+        let state = ctx_with_extension(|db| {
+            let mut list = BlockList::new("Videos");
+            list.websites.push(WebsiteRule::domain("youtube.com"));
+            db.create_block_list(&list).unwrap();
+            db.create_allowance(&focuser_common::allowance::Allowance::new(
+                AllowanceMatch::Domain("www.youtube.com".into()),
+                1800,
+                true,
+            ))
+            .unwrap();
+        });
+        let addr = start(Arc::clone(&state));
+
+        let body = request(&addr, "GET", "/api/rules", None);
+        let rules: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        let blocked = rules["blocked_domains"].as_array().unwrap();
+        let allowed = rules["allowed_domains"].as_array().unwrap();
+
+        for form in ["youtube.com", "www.youtube.com"] {
+            assert!(
+                blocked.iter().any(|d| d == form),
+                "blocked_domains should list {form}: {blocked:?}"
+            );
+            assert!(
+                allowed.iter().any(|d| d == form),
+                "allowed_domains should list {form}: {allowed:?}"
+            );
+        }
+    }
+
+    /// Two lists, the site only in the second. This is the reported bug: the
+    /// popup unblocked against whichever list its dropdown showed, the API
+    /// answered "ok", and the site stayed blocked.
+    fn two_lists_one_holding_youtube() -> (Arc<AppContext>, String, String) {
+        let mut ids = Vec::new();
+        let state = ctx_with_extension(|db| {
+            let empty = BlockList::new("d");
+            let mut videos = BlockList::new("videos");
+            videos.websites.push(WebsiteRule::domain("youtube.com"));
+            ids.push(empty.id.to_string());
+            ids.push(videos.id.to_string());
+            db.create_block_list(&empty).unwrap();
+            db.create_block_list(&videos).unwrap();
+        });
+        let addr = start(Arc::clone(&state));
+        (state, addr, format!("{}|{}", ids[0], ids[1]))
+    }
+
+    #[test]
+    fn removing_from_the_wrong_list_reports_that_it_removed_nothing() {
+        let (_state, addr, ids) = two_lists_one_holding_youtube();
+        let (empty_id, _) = ids.split_once('|').unwrap();
+
+        let body = format!(r#"{{"list_id":"{empty_id}","domain":"youtube.com"}}"#);
+        let reply = request(&addr, "POST", "/api/remove-site", Some(&body));
+
+        assert!(reply.contains(r#""removed":0"#), "{reply}");
+    }
+
+    #[test]
+    fn removing_from_the_holding_list_actually_removes_it() {
+        let (_state, addr, ids) = two_lists_one_holding_youtube();
+        let (_, videos_id) = ids.split_once('|').unwrap();
+
+        let body = format!(r#"{{"list_id":"{videos_id}","domain":"youtube.com"}}"#);
+        let reply = request(&addr, "POST", "/api/remove-site", Some(&body));
+        assert!(reply.contains(r#""removed":1"#), "{reply}");
+
+        let after = request(&addr, "GET", "/api/site-status?domain=youtube.com", None);
+        assert!(after.contains(r#""blocked":false"#), "{after}");
+    }
+
+    #[test]
+    fn site_status_names_the_list_that_actually_holds_the_site() {
+        let (_state, addr, _) = two_lists_one_holding_youtube();
+
+        let reply = request(&addr, "GET", "/api/site-status?domain=youtube.com", None);
+
+        assert!(reply.contains(r#""blocked":true"#), "{reply}");
+        assert!(reply.contains(r#""name":"videos""#), "{reply}");
+        assert!(!reply.contains(r#""name":"d""#), "{reply}");
+        assert!(reply.contains(r#""rule_kind":"domain""#), "{reply}");
+    }
+
+    #[test]
+    fn site_status_reports_a_site_that_is_in_no_list() {
+        let (_state, addr, _) = two_lists_one_holding_youtube();
+
+        let reply = request(&addr, "GET", "/api/site-status?domain=example.com", None);
+
+        assert!(reply.contains(r#""blocked":false"#), "{reply}");
+        assert!(reply.contains(r#""lists":[]"#), "{reply}");
+    }
+
+    #[test]
+    fn a_subdomain_resolves_to_the_list_holding_its_parent() {
+        let (_state, addr, _) = two_lists_one_holding_youtube();
+
+        let reply = request(&addr, "GET", "/api/site-status?domain=m.youtube.com", None);
+
+        assert!(reply.contains(r#""name":"videos""#), "{reply}");
+    }
+
+    #[test]
+    fn a_keyword_rule_is_reported_but_not_deleted() {
+        let mut list_id = String::new();
+        let state = ctx_with_extension(|db| {
+            let mut list = BlockList::new("keywords");
+            list.websites.push(WebsiteRule::keyword("tube"));
+            list_id = list.id.to_string();
+            db.create_block_list(&list).unwrap();
+        });
+        let addr = start(Arc::clone(&state));
+
+        let body = format!(r#"{{"list_id":"{list_id}","domain":"youtube.com"}}"#);
+        let reply = request(&addr, "POST", "/api/remove-site", Some(&body));
+
+        // Deleting a broad keyword because it happened to match one host would
+        // quietly unblock everything else it covers.
+        assert!(reply.contains(r#""removed":0"#), "{reply}");
+        assert!(reply.contains(r#""left_behind":1"#), "{reply}");
+    }
+
+    #[test]
+    fn adding_the_same_site_twice_does_not_create_a_second_rule() {
+        let mut list_id = String::new();
+        let state = ctx_with_extension(|db| {
+            let list = BlockList::new("d");
+            list_id = list.id.to_string();
+            db.create_block_list(&list).unwrap();
+        });
+        let addr = start(Arc::clone(&state));
+        let body = format!(r#"{{"list_id":"{list_id}","domain":"youtube.com"}}"#);
+
+        let first = request(&addr, "POST", "/api/add-site", Some(&body));
+        let second = request(&addr, "POST", "/api/add-site", Some(&body));
+
+        assert!(first.contains(r#""added":1"#), "{first}");
+        assert!(second.contains(r#""duplicate":true"#), "{second}");
+
+        let eng = state.engine.lock().unwrap();
+        let count = eng.block_lists()[0].websites.len();
+        assert_eq!(count, 1, "a second identical rule was stored");
+    }
+
+    #[test]
+    fn an_unknown_endpoint_is_a_404_rather_than_an_empty_answer() {
+        // An older app 404s on endpoints a newer extension knows about. The
+        // extension has to be able to tell that apart from "nothing matched".
+        let state = ctx_with_extension(|_| {});
+        let addr = start(state);
+
+        let reply = request(&addr, "GET", "/api/does-not-exist", None);
+
+        assert!(reply.contains("not found"), "{reply}");
+    }
+
+    // ─── Private-window coverage ─────────────────────────────────────
+
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+
+    #[test]
+    fn an_extension_too_old_to_report_still_counts_as_covering() {
+        let mut hb = super::BrowserHeartbeat::new();
+        hb.record(None);
+        assert!(hb.covers_private_windows(WINDOW));
+    }
+
+    #[test]
+    fn an_extension_without_private_window_access_leaves_a_gap() {
+        let mut hb = super::BrowserHeartbeat::new();
+        hb.record(Some(("a", false)));
+        assert!(!hb.covers_private_windows(WINDOW));
+    }
+
+    #[test]
+    fn a_rules_poll_does_not_forget_a_reported_gap() {
+        let mut hb = super::BrowserHeartbeat::new();
+        hb.record(Some(("a", false)));
+        hb.record(None);
+        assert!(!hb.covers_private_windows(WINDOW));
+    }
+
+    /// Two profiles of one browser report in turn. With one slot per browser
+    /// the answer flipped with every heartbeat, and the profile that leaves
+    /// the gap was never held to it.
+    #[test]
+    fn one_profile_without_access_is_a_gap_whatever_the_others_say() {
+        let mut hb = super::BrowserHeartbeat::new();
+        hb.record(Some(("work", true)));
+        hb.record(Some(("home", false)));
+        hb.record(Some(("work", true)));
+        assert!(!hb.covers_private_windows(WINDOW));
+    }
+
+    /// The browser restarts the extension when the switch is flipped, and it
+    /// reports again at once. Someone who fixes it during the warning must
+    /// not have the browser closed anyway.
+    #[test]
+    fn granting_access_in_that_profile_closes_the_gap_at_once() {
+        let mut hb = super::BrowserHeartbeat::new();
+        hb.record(Some(("home", false)));
+        hb.record(Some(("home", true)));
+        assert!(hb.covers_private_windows(WINDOW));
+    }
+
+    #[test]
+    fn a_profile_that_went_quiet_stops_counting() {
+        let mut hb = super::BrowserHeartbeat::new();
+        hb.record(Some(("gone", false)));
+        // Anything it said is older than a window of no length.
+        assert!(hb.covers_private_windows(std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn the_profiles_kept_per_browser_are_bounded() {
+        let mut hb = super::BrowserHeartbeat::new();
+        for n in 0..500 {
+            hb.record(Some((&format!("p{n}"), true)));
+        }
+        assert!(hb.private_windows.len() <= super::MAX_PROFILES);
+    }
+
+    /// Unknown is not "no". An extension that could not ask its browser, or a
+    /// stray value, must not get a browser closed.
+    #[test]
+    fn only_a_plain_true_or_false_is_an_answer() {
+        assert_eq!(super::parse_flag("true"), Some(true));
+        assert_eq!(super::parse_flag("false"), Some(false));
+        for junk in ["", "undefined", "null", "1", "True", "no"] {
+            assert_eq!(super::parse_flag(junk), None, "{junk:?}");
+        }
+    }
+
+    /// Over real HTTP, on a browser no other test reports for: the map of
+    /// connected browsers is one per process.
+    #[test]
+    fn a_heartbeat_with_no_clear_answer_does_not_open_a_gap() {
+        use focuser_common::extension::BrowserType::Opera;
+        let addr = start(ctx_with_extension(|_| {}));
+        let covered = || super::get_safely_connected_browsers(60).contains(&Opera);
+
+        request(
+            &addr,
+            "GET",
+            "/api/heartbeat?browser=opera&incognito_allowed=undefined",
+            None,
+        );
+        assert!(covered(), "an unknown answer counts as covered");
+
+        request(
+            &addr,
+            "GET",
+            "/api/heartbeat?browser=opera&incognito_allowed=false&profile=p1",
+            None,
+        );
+        assert!(!covered());
+        assert!(
+            super::get_connected_browsers(60).contains(&Opera),
+            "still connected"
+        );
+
+        request(
+            &addr,
+            "GET",
+            "/api/heartbeat?browser=opera&incognito_allowed=true&profile=p1",
+            None,
+        );
+        assert!(covered());
+    }
+
+    /// The browser opens this address when the extension is removed. Brave,
+    /// since no other test reports it.
+    #[test]
+    fn a_removed_extension_stops_covering_its_browser_at_once() {
+        use focuser_common::extension::BrowserType::Brave;
+        let addr = start(ctx_with_extension(|_| {}));
+        let connected = || super::get_connected_browsers(60).contains(&Brave);
+
+        request(
+            &addr,
+            "GET",
+            "/api/heartbeat?browser=brave&incognito_allowed=true&profile=p1",
+            None,
+        );
+        assert!(connected());
+
+        // Any page can open this address, but it does not know the profile.
+        let stranger = raw_request(&addr, "/api/extension-removed?browser=brave&profile=guess");
+        assert!(stranger.starts_with("HTTP/1.1 302"), "{stranger}");
+        assert!(connected(), "a made-up profile removed the extension");
+
+        let removed = raw_request(&addr, "/api/extension-removed?browser=brave&profile=p1");
+        assert!(!connected(), "the browser still counts as covered");
+        // The tab the browser opens for it lands where the extension is back
+        // one click away.
+        assert!(
+            removed.contains(&format!(
+                "Location: {}",
+                focuser_common::browser::CHROME_STORE_URL
+            )),
+            "{removed}"
+        );
+    }
+
+    /// The whole response, status line and headers included.
+    fn raw_request(addr: &str, path: &str) -> String {
+        raw_request_with(
+            addr,
+            path,
+            "Origin: chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n",
+        )
+    }
+
+    /// [`raw_request`] with extra header lines, each ending in `\r\n`.
+    fn raw_request_with(addr: &str, path: &str, headers: &str) -> String {
+        let mut stream = std::net::TcpStream::connect(addr).unwrap();
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nOrigin: chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n{headers}Connection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn web_origins_cannot_read_or_mutate_the_loopback_api() {
+        let addr = start(ctx_with_extension(|_| {}));
+        let response = raw_request_with(&addr, "/api/rules", "Origin: https://example.com\r\n");
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
+        assert_eq!(header_value(&response, "Access-Control-Allow-Origin"), None);
+    }
+
+    #[test]
+    fn only_well_formed_supported_extension_origins_are_accepted() {
+        assert!(super::is_browser_extension_origin(
+            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+        assert!(super::is_browser_extension_origin(
+            "moz-extension://01234567-89ab-cdef-0123-456789abcdef"
+        ));
+        assert!(!super::is_browser_extension_origin("https://example.com"));
+        assert!(!super::is_browser_extension_origin(
+            "chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        ));
+        assert!(!super::is_browser_extension_origin(
+            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/extra"
+        ));
+    }
+
+    fn header_value(response: &str, name: &str) -> Option<String> {
+        let head = response.split("\r\n\r\n").next()?;
+        head.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+    }
+
+    /// The extension asks for the rules every two seconds (#57). Sending the
+    /// whole list each time was gigabytes a day over loopback for big lists.
+    #[test]
+    fn the_rules_go_out_again_only_once_they_have_changed() {
+        let mut list = focuser_common::types::BlockList::new("Focus");
+        list.websites
+            .push(focuser_common::types::WebsiteRule::domain("old.example"));
+        let list_id = list.id;
+        let addr = start(ctx_with_extension(move |db| {
+            db.create_block_list(&list).unwrap();
+        }));
+
+        let first = raw_request(&addr, "/api/rules");
+        assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+        assert_eq!(
+            header_value(&first, "Access-Control-Allow-Origin").as_deref(),
+            Some("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        let tag = header_value(&first, "ETag").expect("the answer has an ETag");
+        assert_eq!(
+            header_value(&first, "Cache-Control").as_deref(),
+            Some("no-cache"),
+            "the browser must ask again each time, not reuse it unasked"
+        );
+
+        let same = raw_request_with(&addr, "/api/rules", &format!("If-None-Match: {tag}\r\n"));
+        assert!(same.starts_with("HTTP/1.1 304"), "{same}");
+        assert_eq!(same.split("\r\n\r\n").nth(1), Some(""), "a 304 has no body");
+
+        // A new rule is a new answer, with a new tag.
+        let body = serde_json::json!({"list_id": list_id, "domain": "new.example"}).to_string();
+        request(&addr, "POST", "/api/add-site", Some(&body));
+        let changed = raw_request_with(&addr, "/api/rules", &format!("If-None-Match: {tag}\r\n"));
+        assert!(changed.starts_with("HTTP/1.1 200"), "{changed}");
+        assert!(changed.contains("new.example"), "{changed}");
+        assert_ne!(header_value(&changed, "ETag"), Some(tag));
+    }
+
+    #[test]
+    fn only_a_check_in_after_the_moment_counts_as_one_since_then() {
+        let pause = || std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut beat = super::BrowserHeartbeat::new();
+        pause();
+        let grace_started = std::time::Instant::now();
+        assert!(
+            !beat.checked_in_since(grace_started),
+            "the check-in that went quiet counted"
+        );
+        pause();
+        beat.record(None);
+        assert!(beat.checked_in_since(grace_started));
+    }
+
+    // ─── query_param ────────────────────────────────────────────────
+    //
+    // Pure and side-effect-free, unlike the heartbeat-tracking functions
+    // above it — those touch a process-wide static, so a unit test poking at
+    // it would race every other test in this binary. This is the part of
+    // that machinery that can actually be tested in isolation.
+
+    #[test]
+    fn query_param_finds_a_value_among_several() {
+        assert_eq!(
+            super::query_param("browser=Chrome&incognito_allowed=true", "incognito_allowed"),
+            Some("true")
+        );
+        assert_eq!(
+            super::query_param("browser=Chrome&incognito_allowed=true", "browser"),
+            Some("Chrome")
+        );
+    }
+
+    #[test]
+    fn query_param_is_absent_for_a_missing_key() {
+        assert_eq!(
+            super::query_param("browser=Chrome", "incognito_allowed"),
+            None
+        );
+    }
+
+    #[test]
+    fn query_param_does_not_match_a_key_that_is_only_a_prefix() {
+        // "browser" must not match "browsers", nor grab an empty value off it.
+        assert_eq!(super::query_param("browsers=Chrome", "browser"), None);
+    }
+
+    /// Turned off, the extension never hears of a lock, so it leaves the
+    /// browser's extensions page alone.
+    #[test]
+    fn guarding_the_extensions_page_follows_its_setting() {
+        let db = focuser_core::db::Database::open_in_memory().unwrap();
+        assert!(super::guards_extensions_page(&db));
+        db.set_setting(focuser_app::execute::SETTING_GUARD_EXTENSIONS_PAGE, "false")
+            .unwrap();
+        assert!(!super::guards_extensions_page(&db));
+    }
+}

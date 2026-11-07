@@ -1,0 +1,96 @@
+{
+  "productName": "FocusGuard",
+  "identifier": "com.publikhq.focusguard",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm ci && npm run build",
+    "frontendDist": "./frontend/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "FocusGuard",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "visible": false,
+        "decorations": false,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": "v1Compatible",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/focuser-cli"
+    ],
+    "resources": [],
+    "copyright": "Copyright 2026 FocusGuard Contributors",
+    "shortDescription": "Website and application blocker",
+    "longDescription": "FocusGuard is a free, open-source website and application blocker that helps you stay focused by blocking distracting websites and apps.",
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "startMenuFolder": "FocusGuard",
+        "installerIcon": "icons/icon.ico",
+        "headerImage": null,
+        "sidebarImage": null,
+        "installerHooks": "nsis/installer-hooks.nsi"
+      },
+      "wix": null
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libappindicator3-1",
+          "libasound2t64 | libasound2"
+        ],
+        "files": {
+          "/usr/lib/systemd/user/focusguard.service": "linux/focusguard.service"
+        }
+      },
+      "rpm": {
+        "depends": [
+          "libwebkit2gtk-4.1.so.0()(64bit)",
+          "libappindicator3.so.1()(64bit)",
+          "libasound.so.2()(64bit)"
+        ]
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJGQjZGN0EzODM5NEY3N0EKUldSNjk1U0RvL2UydjlmRlBHMUhYc2Y3L1NpV2xLd2o3VVc5S0gvSjN0Q2JtaXNtVmt1UUh5aWEK",
+      "endpoints": [
+        "https://github.com/lukashouthoofd/focusguard/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

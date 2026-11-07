@@ -1,0 +1,208 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Only main writes. Branch runs read the cache but do not fill it,
+          # which is what kept a 10 GB repo quota at 8.8 GB.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
+
+      - name: Build sidecar binaries
+        shell: bash
+        run: |
+          cargo build -p focuser-cli
+          mkdir -p crates/focuser-ui/binaries
+          host=$(rustc -vV | awk '/^host:/ {print $2}')
+          ext=""
+          [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          for bin in focuser-cli; do
+            cp "target/debug/$bin$ext" "crates/focuser-ui/binaries/$bin-$host$ext"
+          done
+
+      - name: Run tests
+        run: cargo test --workspace --verbose
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  build-check:
+    name: Build check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Only main writes. Branch runs read the cache but do not fill it,
+          # which is what kept a 10 GB repo quota at 8.8 GB.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
+
+      - name: Build sidecar binaries
+        shell: bash
+        run: |
+          cargo build -p focuser-cli
+          mkdir -p crates/focuser-ui/binaries
+          host=$(rustc -vV | awk '/^host:/ {print $2}')
+          ext=""
+          [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          for bin in focuser-cli; do
+            cp "target/debug/$bin$ext" "crates/focuser-ui/binaries/$bin-$host$ext"
+          done
+
+      - name: Build all crates
+        run: cargo build --workspace
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/focuser-ui/frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/focuser-ui/frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # `postinstall` already does this, but nothing else compiles without it,
+      # so make the dependency visible rather than implicit in a lifecycle hook.
+      - name: Compile messages
+        run: npm run paraglide
+
+      - name: Lint and format
+        run: npx biome check .
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npx vitest run
+
+      - name: Build
+        run: npx vite build
+
+  bindings:
+    name: Bindings are up to date
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
+
+      # focuser-ui declares these as Tauri sidecars, so its build script
+      # refuses to run until they exist — even though exporting bindings does
+      # not use them.
+      - name: Build sidecar binaries
+        shell: bash
+        run: |
+          cargo build -p focuser-cli
+          mkdir -p crates/focuser-ui/binaries
+          host=$(rustc -vV | awk '/^host:/ {print $2}')
+          for bin in focuser-cli; do
+            cp "target/debug/$bin" "crates/focuser-ui/binaries/$bin-$host"
+          done
+
+      # Generated from Rust, so a stale committed copy means the frontend is
+      # typechecking against a backend that no longer exists.
+      - name: Regenerate
+        run: cargo run -p focuser-ui -- --export-bindings
+
+      - name: Check for drift
+        run: git diff --exit-code -- crates/focuser-ui/frontend/src/bindings.ts
+
+  extension:
+    name: Extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run compile
+
+      # The hostname rules here mirror focuser_common::host. If they drift,
+      # which form the user typed starts to matter again.
+      - name: Test
+        run: npm test
+
+      # Both targets, because the manifests differ and only a build catches a
+      # config that is valid for one browser and not the other.
+      - name: Build (Chrome)
+        run: npm run build
+
+      - name: Build (Firefox)
+        run: npm run build:firefox

@@ -1,0 +1,117 @@
+# FocusGuard, ko.
+#
+# First draft, not reviewed by a native speaker. Corrections welcome:
+# see TRANSLATING.md in the repository root.
+
+block:
+  reason:
+    domain: 차단 목록에 있습니다
+    keyword: 주소에 차단된 단어가 있습니다
+    urlPath: 사이트의 이 부분이 차단되어 있습니다
+    wildcard: 차단 패턴과 일치합니다
+    everything: 지금은 전부 차단 중입니다
+  attempt:
+    '1': 오늘 처음입니다
+    'n': $1번째 시도
+  goBack: 뒤로
+  closeTab: 탭 닫기
+  pressEsc: 누르면
+  toGoBack: 이전 페이지로 돌아갑니다
+  openApp: FocusGuard 열기
+  privacy: 이 내용은 이 컴퓨터를 벗어나지 않습니다.
+  blocked: 차단됨
+popup:
+  blockingEverything: 전부 차단 중
+  rulesActive:
+    '1': 규칙 1개 적용 중
+    'n': 규칙 $1개 적용 중
+  notRunning: 데스크톱 앱이 실행되고 있지 않습니다
+  disconnected: 지금은 아무것도 차단되지 않습니다. FocusGuard 데스크톱 앱을 실행하면 규칙이 다시 적용됩니다.
+  noAccessTitle: 웹사이트에 접근할 수 없습니다
+  noAccess: 웹사이트를 차단하고 데스크톱 앱에 연결하려면 FocusGuard에 모든 웹사이트 접근 권한이 필요합니다.
+  allowAccess: 접근 허용
+  currentSite: 현재 사이트
+  noSiteOpen: 열린 사이트가 없습니다
+  updateApp: 이 내용을 보려면 앱을 업데이트하세요
+  inLists: '{names}에 있음'
+  notInAnyList: 어떤 목록에도 없음
+  unblockEverywhere: 모든 목록에서 해제
+  noBlockList: 먼저 데스크톱 앱에서 차단 목록을 만들어 주세요. 아직 이 사이트를 넣을 곳이 없습니다
+  blockThisSite: 이 사이트 차단
+  blockList: 차단 목록
+  openApp: FocusGuard 열기
+  unreachable: 데스크톱 앱에 연결할 수 없습니다
+  blocked: '{name}에서 {host}을(를) 차단했습니다'
+  alreadyBlocked: '{host}은(는) 이미 {name}에 있었습니다'
+  notInAnyListNote: '{host}은(는) 어떤 목록에도 없었습니다'
+  stubborn: '{name}의 {kind} 규칙에 아직 걸립니다. 앱에서 수정해 주세요.'
+  unblocked: '{names}에서 {host}의 차단을 해제했습니다'
+  statToday: 오늘
+  statSites: 사이트
+  statLists: 목록
+  'on': 켜짐
+  'off': 꺼짐
+select:
+  placeholder: 선택…
+welcome:
+  headingUpdated: FocusGuard가 더 좋아졌습니다
+  headingInstalled: FocusGuard를 설치해 주셔서 고맙습니다
+  introUpdated: 이번 버전에서 달라진 점과, 각 부분이 어떻게 맞물리는지에 대한 짧은 안내입니다.
+  introInstalled: FocusGuard는 일하는 동안 주의를 뺏는 사이트를 눈앞에서 치워 줍니다. 시작하는 데 필요한 내용은 여기 다 있습니다.
+  setupTitle: 설정할 것은 한 가지뿐
+  setupBody1: 차단 목록은 확장 프로그램이 아니라 FocusGuard 데스크톱 앱이 가지고 있습니다. 확장 프로그램이 앱에 물어보는 구조라서, 같은 규칙 하나로 브라우저와 프로그램을 함께 다룰 수 있습니다. 앱을 켜 두면 브라우저 쪽은 확장 프로그램이 알아서 맡습니다.
+  setupBody2: 앱이 꺼져 있으면 도구 모음 아이콘에 빨간 표시가 뜨고 아무것도 차단되지 않습니다. 작동하는 척하지 않고 있는 그대로 알려 주는 것입니다.
+  openApp: FocusGuard 앱 열기
+  getApp: 데스크톱 앱 받기
+
+  incognitoTitle: "비공개 창에서도 FocusGuard 허용하기"
+  incognitoBody: "{browser}은(는) 허용하기 전까지 확장 프로그램을 비공개 창에서 실행하지 않습니다. 그래서 그곳에서 여는 페이지는 아직 차단되지 않습니다. 차단이 켜져 있는 동안에는 이 설정을 켤 때까지 FocusGuard가 {browser}을(를) 종료합니다."
+  incognitoStepsChromium: "확장 프로그램 설정을 열고 \"{setting}\"을(를) 켜 주세요."
+  incognitoStepsFirefox: "메뉴에서 부가 기능 및 테마로 가서 FocusGuard를 선택하고 \"사생활 보호 창에서 실행\"을 허용으로 바꿔 주세요."
+  incognitoSettingIncognito: "시크릿 모드에서 허용"
+  incognitoSettingInPrivate: "InPrivate에서 허용"
+  incognitoSettingPrivate: "비공개 창에서 허용"
+  incognitoReloadNote: "설정을 바꾸면 확장 프로그램이 다시 시작되므로 이 페이지가 닫힐 수 있습니다. 정상입니다."
+  incognitoOpenSettings: "확장 프로그램 설정 열기"
+  whatsNewVersion: 버전 {version}의 새로운 점
+  whatsNew: 새로운 점
+  new1Title: 처음부터 다시 만들었습니다
+  new1Body: 확장 프로그램을 새로 작성했습니다. 더 가볍고 더 빨리 시작하며, 하나의 코드로 Chrome, Edge, Brave, Firefox를 모두 지원합니다.
+  new2Title: 읽어 볼 만한 차단 화면
+  new2Body: 어떤 사이트인지, 어떤 규칙에 걸렸는지 알려 주고 오늘 몇 번 시도했는지 셉니다. 그 횟수가 늘어나면 문구도 달라집니다.
+  new3Title: 팝업은 사실을 말합니다
+  new3Body: 사이트가 실제로 어떤 목록에 들어 있는지 보여 줍니다. 해제하면 하나를 짐작하는 대신 모든 목록에서 빼냅니다.
+  new4Title: 사이트가 잠깐 보이는 일이 없습니다
+  new4Body: 페이지가 그려지기 전에 차단이 적용되므로, 피하려던 것이 눈에 스칠 일이 없습니다.
+  point1Title: 도메인만이 아닙니다
+  point1Body: 사이트 전체, 주소에 든 단어, 패턴, 또는 사이트의 한 부분만 차단할 수 있습니다.
+  point2Title: 원할 때만
+  point2Body: 목록은 주간 일정에 따라 켜지게 하거나, 한 번의 집중 시간 동안만 쓸 수 있습니다.
+  point3Title: 이 컴퓨터 안에서 끝납니다
+  point3Body: 내 컴퓨터의 FocusGuard 앱하고만 통신하고, 다른 어디와도 연결하지 않습니다.
+  waysTitle: 차단하는 네 가지 방법
+  waysIntro: 데스크톱 앱의 웹사이트 화면에서 추가하세요. 확장 프로그램은 네 가지 모두를 적용합니다.
+  colKind: 종류
+  colExample: 예시
+  colCovers: 적용 범위
+  kindSite: 사이트
+  kindWord: 단어
+  kindPattern: 패턴
+  kindSection: 섹션
+  coversSite: 그 사이트와 그 아래 전부
+  coversWord: 그 단어가 들어간 모든 주소
+  coversPattern: 패턴과 일치하는 모든 것
+  coversSection: 사이트의 그 부분만
+  openSourceTitle: 무료이고 오픈 소스입니다
+  openSourceBody1: FocusGuard는 전부 오픈 소스입니다. 앱과 이 확장 프로그램의 모든 코드가 GitHub에 있으니, 무슨 일을 하는지 그대로 읽어 보고 아무 데도 전송하지 않는다는 것을 직접 확인하고, 원하면 고칠 수도 있습니다.
+  openSourceBody2: 거들고 싶다면 저장소로 오세요. 풀 리퀘스트는 물론 버그 신고와 아이디어도 환영합니다.
+  star: 프로젝트에 별 주기
+  reportBug: 버그 신고하기
+  contribute: 코드 기여하기
+  thanks: FocusGuard를 써 주셔서 고맙습니다. 하려는 일이 잘 되기를 바랍니다.
+  waysCaption: 규칙 종류와 각각의 적용 범위
+  tagline: 다른 일을 하고 싶은 사람들을 위해 만들었습니다.
+  versionBadge: 버전 {version}
+locked:
+  title: "지금은 잠겨 있음"
+  body: "차단 목록이 잠겨 있어서 FocusGuard가 브라우저의 확장 프로그램 페이지를 닫아 둡니다. 잠금이 끝나면 다시 열 수 있습니다."
