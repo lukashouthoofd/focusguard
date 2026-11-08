@@ -102,6 +102,21 @@ mod windows_service_host {
         Ok(parsed)
     }
 
+    /// `windows-service` passes the registered service name as argv[0]. The
+    /// console entry point already strips its mode flag before parsing, so the
+    /// SCM entry point removes this dispatcher-only argument first.
+    fn strip_service_name_argument(arguments: Vec<OsString>) -> Vec<OsString> {
+        if arguments
+            .first()
+            .and_then(|argument| argument.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case(SERVICE_NAME))
+        {
+            arguments.into_iter().skip(1).collect()
+        } else {
+            arguments
+        }
+    }
+
     fn run_console(
         owner_sid: String,
         service_sid: String,
@@ -141,6 +156,7 @@ mod windows_service_host {
     }
 
     fn run_service(arguments: Vec<OsString>) -> anyhow::Result<()> {
+        let arguments = strip_service_name_argument(arguments);
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
         let handler_tx = Arc::clone(&shutdown_tx);
@@ -285,6 +301,32 @@ mod windows_service_host {
             checkpoint: 0,
             wait_hint: Duration::ZERO,
             process_id: None,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn strips_registered_service_name_before_parsing_configuration() {
+            let arguments = vec![
+                OsString::from("focusguardservice"),
+                OsString::from("--owner-sid"),
+                OsString::from("S-1-5-21-1"),
+            ];
+
+            assert_eq!(
+                strip_service_name_argument(arguments),
+                [OsString::from("--owner-sid"), OsString::from("S-1-5-21-1")]
+            );
+        }
+
+        #[test]
+        fn preserves_arguments_when_dispatcher_name_is_absent() {
+            let arguments = vec![OsString::from("--owner-sid"), OsString::from("S-1-5-21-1")];
+
+            assert_eq!(strip_service_name_argument(arguments.clone()), arguments);
         }
     }
 }
