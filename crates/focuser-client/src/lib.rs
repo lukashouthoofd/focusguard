@@ -112,7 +112,11 @@ fn service_registered_windows() -> io::Result<bool> {
 
     let manager = unsafe { OpenSCManagerW(null_mut(), null_mut(), SC_MANAGER_CONNECT) };
     if manager.is_null() {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        return Err(io::Error::new(
+            error.kind(),
+            format!("OpenSCManagerW(SC_MANAGER_CONNECT): {error}"),
+        ));
     }
     let manager = ServiceHandle(manager);
 
@@ -131,7 +135,10 @@ fn service_registered_windows() -> io::Result<bool> {
     if error.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
         Ok(false)
     } else {
-        Err(error)
+        Err(io::Error::new(
+            error.kind(),
+            format!("OpenServiceW(FocusGuardService, 0): {error}"),
+        ))
     }
 }
 
