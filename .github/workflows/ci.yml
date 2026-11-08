@@ -250,3 +250,39 @@ jobs:
         run: |
           cargo tauri build --target "${{ matrix.target }}" --bundles dmg --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
           test -n "$(find ../../target/${{ matrix.target }}/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+
+  package-windows:
+    name: Windows NSIS package
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build CLI sidecar
+        shell: pwsh
+        run: |
+          $targetTriple = (rustc -vV | Select-String '^host:\s*(.+)$').Matches.Groups[1].Value
+          if (-not $targetTriple) { throw 'Could not determine the Rust host target.' }
+          cargo build --locked --release -p focuser-cli
+          New-Item -ItemType Directory -Force crates/focuser-ui/binaries | Out-Null
+          Copy-Item target/release/focuser-cli.exe "crates/focuser-ui/binaries/focuser-cli-$targetTriple.exe"
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked --version 2.10.1
+
+      - name: Build unsigned NSIS package without updater artifacts
+        working-directory: crates/focuser-ui
+        shell: pwsh
+        run: |
+          cargo tauri build --bundles nsis --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          $packages = @(Get-ChildItem ../../target/release/bundle/nsis -File -Filter '*.exe')
+          if ($packages.Count -ne 1) { throw "Expected one NSIS package, found $($packages.Count)." }
+          Write-Output "Built unsigned Windows package: $($packages[0].Name) ($($packages[0].Length) bytes)"
