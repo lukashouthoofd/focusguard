@@ -1,6 +1,6 @@
 # Windows enforcement service design
 
-Status: proposed architecture. The current FocusGuard Windows build does **not** implement this design. No service or machine-wide enforcement was installed or runtime-tested.
+Status: staged implementation. `focuser-app::protocol` now defines typed request/response envelopes and 1 MiB length-prefixed JSON framing. The current FocusGuard Windows build still has no named-pipe transport, peer authorization, SCM service, or service-owned enforcement. No service or machine-wide enforcement was installed or runtime-tested.
 
 ## Why a service is required
 
@@ -41,7 +41,7 @@ Do not add a kernel driver to the first service milestone. Evaluate user-mode Wi
 
 ## Implementation sequence
 
-1. Extract a transport-neutral service command layer and add tests for lock-preserving mutations, durable commits, and status reporting.
+1. The shared command layer and lock-preserving mutation tests already live in `focuser-app`; its `protocol` module now supplies typed, versioned, bounded wire frames. Add transport-specific peer authorization and lifecycle tests with the named-pipe server.
 2. Add a Windows-only service executable and named-pipe server; build and protocol-test it without installing it on the development host.
 3. Move the loopback API and enforcement workers into the service; make the UI a client and remove Windows UI-owned host/process enforcement.
 4. Add service installation, ACLs, recovery actions, data migration, and admin cleanup to the installer only after the service and pipe tests pass.

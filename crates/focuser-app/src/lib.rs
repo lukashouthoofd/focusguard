@@ -14,6 +14,7 @@ pub mod command;
 pub mod context;
 pub mod error;
 pub mod execute;
+pub mod protocol;
 
 pub use command::{Command, CommandResult};
 pub use context::{AppContext, NoopSync, PomodoroEvent, SystemSync};
