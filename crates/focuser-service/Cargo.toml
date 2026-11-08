@@ -20,6 +20,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+focuser-client.workspace = true
 tempfile = "3.27.0"
 
 [target.'cfg(windows)'.dependencies]

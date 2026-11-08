@@ -6,6 +6,9 @@ use crate::browser::BrowserStatusInfo;
 use crate::extension::{BlockingCapabilities, ExtensionEvent, ExtensionRuleSet};
 use crate::types::{BlockList, EntityId, UsageStat};
 
+/// Versioned local named-pipe endpoint shared by the Windows client and service.
+pub const FOCUSGUARD_SERVICE_PIPE_NAME: &str = r"\\.\pipe\PublikHQ.FocusGuard.Service.v1";
+
 /// Request from client (CLI/GUI) to service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum IpcRequest {

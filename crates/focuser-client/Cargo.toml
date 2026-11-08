@@ -1,0 +1,21 @@
+[package]
+name = "focuser-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authenticated Windows named-pipe client for the FocusGuard service"
+
+[dependencies]
+focuser-app.workspace = true
+focuser-common.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Pipes",
+    "Win32_System_Services",
+] }

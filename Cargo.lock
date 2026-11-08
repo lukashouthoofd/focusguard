@@ -1382,6 +1382,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "focuser-client"
+version = "0.1.0"
+dependencies = [
+ "focuser-app",
+ "focuser-common",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "focuser-common"
 version = "0.1.0"
 dependencies = [
@@ -1460,6 +1472,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "focuser-app",
+ "focuser-client",
  "focuser-common",
  "focuser-core",
  "tempfile",

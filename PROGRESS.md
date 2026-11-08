@@ -1,5 +1,12 @@
 # Progress
 
+## 2026-11-08 - Authenticated Windows service client
+
+- Added the reusable `focuser-client` crate. Its production entry point opens the versioned named pipe, checks that SCM reports the server PID as the running, own-process `FocusGuardService`, applies bounded connect retries and a five-second protocol deadline, and rejects responses with a mismatched request ID. It uses only SCM connect/query-status access, so it does not need to open the privileged service process token.
+- A read-only local access probe confirmed that an unelevated process cannot open the token of a built-in SYSTEM service on this machine; this led to the SCM PID check before the client was considered ready. The local named-pipe integration check rejects an unexpected server PID in its custom-host mode, then successfully dispatches a typed block-list command when the expected process ID matches. It does not test the SCM identity path or installed service.
+- Full Rust workspace tests and doctests, strict all-target Clippy, formatting, and workspace build passed on Windows. This change did not install a service or modify system policy.
+- The client crate is not yet connected to the desktop UI or installer. Standard-user access to the installed service's `SERVICE_QUERY_STATUS` right, SCM identity validation against the real service, UI fail-closed behavior, migration, service recovery, and actual browser blocking still require integration and disposable-VM evidence.
+
 ## 2026-11-08 - Persistent domain-policy service prototype
 
 - Added a shared injectable hosts-file writer with balanced marker validation, DNS-label validation, preservation of unrelated file bytes, conflict detection, and atomic replacement (`ReplaceFileW` on Windows). Removing the owned section preserves text that follows it. Windows tests operate only on temporary files.

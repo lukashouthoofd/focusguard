@@ -50,7 +50,7 @@ use windows_sys::{
     core::PWSTR,
 };
 
-pub const PIPE_NAME: &str = r"\\.\pipe\PublikHQ.FocusGuard.Service.v1";
+pub const PIPE_NAME: &str = focuser_common::ipc::FOCUSGUARD_SERVICE_PIPE_NAME;
 const MAX_PIPE_INSTANCES: u32 = 4;
 const MAX_CLIENTS: usize = MAX_PIPE_INSTANCES as usize - 1;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -566,6 +566,67 @@ mod tests {
         let response = protocol::read_response_async(&mut client).await.unwrap();
         server_task.await.unwrap().unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn shared_client_checks_server_process_id_and_executes_over_the_named_pipe() {
+        let owner_sid = current_user_sid_string().unwrap();
+        let service_sid = current_user_sid_string().unwrap();
+        let expected_server_pid = std::process::id();
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("service.db");
+        let hosts = directory.path().join("hosts");
+        fs::write(&hosts, "127.0.0.1 localhost\n").unwrap();
+        let context =
+            Arc::new(crate::enforcement::open_context(&database, &hosts, no_flush).unwrap());
+
+        let rejected_name = test_pipe_name();
+        let rejected_server = create_pipe(&rejected_name, &owner_sid, &service_sid, true).unwrap();
+        let rejected_owner_sid = owner_sid.clone();
+        let rejected_context = Arc::clone(&context);
+        let rejected_server_task = tokio::spawn(async move {
+            rejected_server.connect().await?;
+            handle_connection(
+                rejected_server,
+                &rejected_owner_sid,
+                &rejected_context,
+                true,
+            )
+            .await
+        });
+        let rejection = focuser_client::execute_for_process(
+            &rejected_name,
+            expected_server_pid ^ 1,
+            Command::AppVersion,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            rejection,
+            focuser_client::ClientError::Connect(error)
+                if error.kind() == io::ErrorKind::PermissionDenied
+        ));
+        assert!(rejected_server_task.await.unwrap().is_err());
+
+        let name = test_pipe_name();
+        let server = create_pipe(&name, &owner_sid, &service_sid, true).unwrap();
+        let server_owner_sid = owner_sid.clone();
+        let server_task = tokio::spawn(async move {
+            server.connect().await?;
+            handle_connection(server, &server_owner_sid, &context, true).await
+        });
+
+        let result = focuser_client::execute_for_process(
+            &name,
+            expected_server_pid,
+            Command::CreateBlockList {
+                name: "From client crate".into(),
+            },
+        )
+        .await
+        .unwrap();
+        server_task.await.unwrap().unwrap();
+        assert_eq!(result.as_block_list().unwrap().name, "From client crate");
     }
 
     #[tokio::test]

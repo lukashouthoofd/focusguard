@@ -5,6 +5,7 @@ members = [
     "crates/focuser-core",
     "crates/focuser-app",
     "crates/focuser-service",
+    "crates/focuser-client",
     "crates/focuser-devserver",
     "crates/focuser-cli",
     "crates/focuser-native",
@@ -51,3 +52,4 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 focuser-common = { path = "crates/focuser-common" }
 focuser-core = { path = "crates/focuser-core" }
 focuser-app = { path = "crates/focuser-app" }
+focuser-client = { path = "crates/focuser-client" }
