@@ -156,23 +156,19 @@ mod windows_service_host {
                 _ => ServiceControlHandlerResult::NotImplemented,
             })?;
 
-        status_handle.set_service_status(status(
-            ServiceState::StartPending,
-            ServiceControlAccept::empty(),
-            ServiceExitCode::NO_ERROR,
-        ))?;
-        let (owner_sid, service_sid, runtime, listener, context) = match prepare_service(arguments)
-        {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let _ = status_handle.set_service_status(status(
-                    ServiceState::Stopped,
-                    ServiceControlAccept::empty(),
-                    ServiceExitCode::Win32(1),
-                ));
-                return Err(error);
-            }
-        };
+        report_start_pending(&status_handle, 1)?;
+        let (owner_sid, service_sid, runtime, listener, context) =
+            match prepare_service(arguments, &status_handle) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let _ = status_handle.set_service_status(status(
+                        ServiceState::Stopped,
+                        ServiceControlAccept::empty(),
+                        ServiceExitCode::Win32(1),
+                    ));
+                    return Err(error);
+                }
+            };
         status_handle.set_service_status(status(
             ServiceState::Running,
             ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
@@ -207,6 +203,7 @@ mod windows_service_host {
 
     fn prepare_service(
         arguments: Vec<OsString>,
+        status_handle: &service_control_handler::ServiceStatusHandle,
     ) -> anyhow::Result<(
         String,
         String,
@@ -214,6 +211,7 @@ mod windows_service_host {
         NamedPipeServer,
         Arc<focuser_app::AppContext>,
     )> {
+        report_start_pending(status_handle, 2)?;
         let options = parse_options(&arguments)?;
         let owner_sid = options
             .owner_sid
@@ -224,6 +222,7 @@ mod windows_service_host {
         let hosts_path = options
             .hosts_path
             .context("service configuration must include --hosts-file <PATH>")?;
+        report_start_pending(status_handle, 3)?;
         let service_sid = pipe::service_sid_string(SERVICE_NAME)
             .context("resolve FocusGuard service SID; install with a service SID enabled")?;
         if !pipe::current_process_has_enabled_sid(&service_sid)? {
@@ -231,18 +230,38 @@ mod windows_service_host {
                 "service SID is not enabled in the SCM process token; enable SERVICE_SID_TYPE_UNRESTRICTED or SERVICE_SID_TYPE_RESTRICTED"
             );
         }
+        report_start_pending(status_handle, 4)?;
         let context = Arc::new(enforcement::open_context(
             database_path,
             hosts_path,
             enforcement::flush_system_dns,
         )?);
+        report_start_pending(status_handle, 5)?;
         enforcement::reconcile_once(&context)
             .map_err(|error| anyhow::anyhow!("initial policy reconciliation failed: {error}"))?;
+        report_start_pending(status_handle, 6)?;
         let runtime = Builder::new_multi_thread().enable_all().build()?;
+        report_start_pending(status_handle, 7)?;
         let listener = runtime
             .block_on(pipe::prepare(&owner_sid, &service_sid))
             .context("prepare secured pipe listener and verify service SID access")?;
         Ok((owner_sid, service_sid, runtime, listener, context))
+    }
+
+    fn report_start_pending(
+        status_handle: &service_control_handler::ServiceStatusHandle,
+        checkpoint: u32,
+    ) -> anyhow::Result<()> {
+        let mut service_status = status(
+            ServiceState::StartPending,
+            ServiceControlAccept::empty(),
+            ServiceExitCode::NO_ERROR,
+        );
+        service_status.checkpoint = checkpoint;
+        service_status.wait_hint = Duration::from_secs(30);
+        status_handle
+            .set_service_status(service_status)
+            .context("report service startup progress")
     }
 
     fn status(

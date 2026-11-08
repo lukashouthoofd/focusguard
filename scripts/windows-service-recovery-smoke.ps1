@@ -36,8 +36,14 @@ function Get-ServiceInfo {
 
 function Wait-ServiceRunning([uint32] $PreviousPid = 0) {
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    $lastCheckpoint = $null
     do {
         $service = Get-ServiceInfo
+        if ($null -ne $service -and $service.State -eq 'Start Pending' -and
+            $service.CheckPoint -ne $lastCheckpoint) {
+            $lastCheckpoint = $service.CheckPoint
+            Write-Host "SCM startup checkpoint $lastCheckpoint (wait hint: $($service.WaitHint) ms)."
+        }
         if ($null -ne $service -and $service.State -eq 'Running' -and
             $service.ProcessId -gt 0 -and
             ($PreviousPid -eq 0 -or $service.ProcessId -ne $PreviousPid)) {
@@ -45,6 +51,29 @@ function Wait-ServiceRunning([uint32] $PreviousPid = 0) {
         }
         Start-Sleep -Milliseconds 500
     } while ([DateTime]::UtcNow -lt $deadline)
+
+    $service = Get-ServiceInfo
+    if ($null -ne $service) {
+        Write-Host "Last SCM status: state=$($service.State), checkpoint=$($service.CheckPoint), waitHint=$($service.WaitHint), PID=$($service.ProcessId)."
+        & sc.exe queryex $serviceName | Out-Host
+    }
+    if (Test-Path $databasePath) {
+        Get-Item -LiteralPath $databasePath | Select-Object FullName, Length, LastWriteTimeUtc | Format-List | Out-Host
+    }
+    if (Test-Path $hostsPath) {
+        Write-Host 'Temporary hosts fixture at startup timeout:'
+        Get-Content -LiteralPath $hostsPath | Out-Host
+    }
+    try {
+        Get-WinEvent -FilterHashtable @{
+            LogName = 'System'
+            ProviderName = 'Service Control Manager'
+            StartTime = [DateTime]::UtcNow.AddMinutes(-5)
+        } -MaxEvents 20 -ErrorAction Stop |
+            Select-Object TimeCreated, Id, LevelDisplayName, Message |
+            Format-List | Out-Host
+    }
+    catch { Write-Host "Could not read recent SCM events: $_" }
     throw "SCM did not start/restart $serviceName within 45 seconds."
 }
 
