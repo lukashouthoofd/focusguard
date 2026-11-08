@@ -59,6 +59,7 @@ function Show-RecentServiceEvents {
 function Wait-ServiceRunning([uint32] $PreviousPid = 0) {
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
     $lastCheckpoint = $null
+    $reportedRecoveryWait = $false
     do {
         $service = Get-ServiceInfo
         if ($null -ne $service -and $service.State -eq 'Start Pending' -and
@@ -67,13 +68,20 @@ function Wait-ServiceRunning([uint32] $PreviousPid = 0) {
             Write-Host "SCM startup checkpoint $lastCheckpoint (wait hint: $($service.WaitHint) ms)."
         }
         if ($null -ne $service -and $service.State -eq 'Stopped') {
-            Write-Host "Service stopped during startup (Win32 exit $($service.ExitCode), service exit $($service.ServiceSpecificExitCode))."
-            if (Test-Path $diagnosticsPath) {
-                Get-Content -LiteralPath $diagnosticsPath | Out-Host
+            if ($PreviousPid -eq 0) {
+                Write-Host "Service stopped during startup (Win32 exit $($service.ExitCode), service exit $($service.ServiceSpecificExitCode))."
+                if (Test-Path $diagnosticsPath) {
+                    Get-Content -LiteralPath $diagnosticsPath | Out-Host
+                }
+                & sc.exe queryex $serviceName | Out-Host
+                Show-RecentServiceEvents
+                throw "$serviceName stopped before reaching Running."
             }
-            & sc.exe queryex $serviceName | Out-Host
-            Show-RecentServiceEvents
-            throw "$serviceName stopped before reaching Running."
+
+            if (-not $reportedRecoveryWait) {
+                Write-Host "Service is stopped after the forced crash; waiting for SCM's configured recovery action."
+                $reportedRecoveryWait = $true
+            }
         }
         if ($null -ne $service -and $service.State -eq 'Running' -and
             $service.ProcessId -gt 0 -and
