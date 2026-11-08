@@ -8,13 +8,15 @@ use std::io::{self, Read, Write};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
-use crate::{Command, CommandErrorPayload, CommandResult};
+use crate::{AppContext, Command, CommandErrorPayload, CommandResult, execute};
 
 /// Version of the serialized service protocol.
 pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Maximum JSON payload accepted in one frame, excluding the 4-byte header.
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+
+const OVERSIZED_RESPONSE_CODE: &str = "response_too_large";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEnvelope {
@@ -68,17 +70,8 @@ pub fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> io::Result<T>
 /// Write one big-endian length-prefixed JSON frame, enforcing the same cap as
 /// [`read_frame`].
 pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io::Result<()> {
-    let payload = serde_json::to_vec(message).map_err(invalid_data)?;
-    if payload.is_empty() || payload.len() > MAX_FRAME_BYTES {
-        return Err(invalid_data(format!(
-            "invalid frame length: {}",
-            payload.len()
-        )));
-    }
-    let length = u32::try_from(payload.len())
-        .map_err(|_| invalid_data("frame length cannot be represented"))?;
-    writer.write_all(&length.to_be_bytes())?;
-    writer.write_all(&payload)
+    let payload = encode_payload(message).map_err(payload_error_to_io)?;
+    write_encoded_frame(writer, &payload)
 }
 
 pub fn read_request<R: Read>(reader: &mut R) -> io::Result<RequestEnvelope> {
@@ -100,7 +93,109 @@ pub fn read_response<R: Read>(reader: &mut R) -> io::Result<ResponseEnvelope> {
 
 pub fn write_response<W: Write>(writer: &mut W, response: &ResponseEnvelope) -> io::Result<()> {
     validate_version(response.version)?;
-    write_frame(writer, response)
+    let payload = match encode_payload(response) {
+        Ok(payload) => payload,
+        Err(PayloadError::TooLarge) => {
+            let fallback = ResponseEnvelope::new(
+                response.request_id,
+                Err(CommandErrorPayload {
+                    code: OVERSIZED_RESPONSE_CODE.into(),
+                    message: "Response exceeds the 1 MiB service protocol limit; narrow the query or split the operation.".into(),
+                }),
+            );
+            encode_payload(&fallback).map_err(payload_error_to_io)?
+        }
+        Err(error) => return Err(payload_error_to_io(error)),
+    };
+    write_encoded_frame(writer, &payload)
+}
+
+/// Execute an already decoded and authorized request through the shared command
+/// layer. Only explicitly reviewed service commands are accepted. The pipe
+/// adapter must authenticate its peer before calling this.
+pub fn dispatch_service_request(
+    context: &AppContext,
+    request: RequestEnvelope,
+) -> ResponseEnvelope {
+    let result = if request.version != PROTOCOL_VERSION {
+        Err(CommandErrorPayload {
+            code: "unsupported_protocol_version".into(),
+            message: format!("unsupported protocol version: {}", request.version),
+        })
+    } else if !service_command_allowed(&request.command) {
+        Err(CommandErrorPayload {
+            code: "command_not_supported_by_service".into(),
+            message: "This command is only available to the desktop UI.".into(),
+        })
+    } else {
+        execute(context, request.command).map_err(CommandErrorPayload::from)
+    };
+    ResponseEnvelope::new(request.request_id, result)
+}
+
+/// A closed allowlist: a newly added command is rejected until someone reviews
+/// whether it is appropriate to expose through the privileged service.
+fn service_command_allowed(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::ListBlockLists
+            | Command::CreateBlockList { .. }
+            | Command::UpdateBlockList { .. }
+            | Command::DeleteBlockList { .. }
+            | Command::ToggleBlockList { .. }
+            | Command::AddWebsiteRule { .. }
+            | Command::RemoveWebsiteRule { .. }
+            | Command::BulkImportWebsites { .. }
+            | Command::ClearAllWebsites
+            | Command::AddAppRule { .. }
+            | Command::RemoveAppRule { .. }
+            | Command::ClearAllApps
+            | Command::AddException { .. }
+            | Command::RemoveException { .. }
+            | Command::UpdateSchedule { .. }
+            | Command::GetStats { .. }
+            | Command::GetBlockedEvents { .. }
+            | Command::ClearStatistics
+            | Command::GetStatsRetention
+            | Command::SetStatsRetention { .. }
+            | Command::EnableProtection { .. }
+            | Command::ConfigureScheduledProtection { .. }
+            | Command::RelockScheduledProtection { .. }
+            | Command::GetScheduledProtectionStatus
+            | Command::ConfigureSharedAllowance { .. }
+            | Command::GetSharedAllowanceStatus
+            | Command::GetProtectionStatus
+            | Command::RequestUnlockChallenge { .. }
+            | Command::UnlockProtection { .. }
+            | Command::GetSetting { .. }
+            | Command::SetSetting { .. }
+            | Command::ResetSettings
+            | Command::GetBlockingHealth
+            | Command::ApplyBlocks
+            | Command::RemoveBlocks
+            | Command::PomodoroStatus
+            | Command::PomodoroPresets
+            | Command::PomodoroStart { .. }
+            | Command::PomodoroPause
+            | Command::PomodoroResume
+            | Command::PomodoroSkip
+            | Command::PomodoroStop
+            | Command::PomodoroDrainEvents
+            | Command::PomodoroHistory { .. }
+            | Command::AllowanceList
+            | Command::AllowanceCreate { .. }
+            | Command::AllowanceUpdate { .. }
+            | Command::AllowanceDelete { .. }
+            | Command::AllowanceResetToday { .. }
+            | Command::AllowanceDrainNotifications
+            | Command::AllowanceHistory { .. }
+            | Command::ExportConfiguration
+            | Command::ImportConfiguration { .. }
+            | Command::DeleteAllData
+            | Command::CheckDomain { .. }
+            | Command::GetBrowserStatus
+            | Command::AppVersion
+    )
 }
 
 fn validate_version(version: u16) -> io::Result<()> {
@@ -117,9 +212,73 @@ fn invalid_data(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
+enum PayloadError {
+    TooLarge,
+    Serialization(serde_json::Error),
+}
+
+struct CappedPayloadWriter {
+    bytes: Vec<u8>,
+    exceeded_limit: bool,
+}
+
+impl Write for CappedPayloadWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > MAX_FRAME_BYTES.saturating_sub(self.bytes.len()) {
+            self.exceeded_limit = true;
+            return Err(invalid_data("frame exceeds the 1 MiB payload limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn encode_payload<T: Serialize>(message: &T) -> Result<Vec<u8>, PayloadError> {
+    let mut writer = CappedPayloadWriter {
+        bytes: Vec::new(),
+        exceeded_limit: false,
+    };
+    if let Err(error) = serde_json::to_writer(&mut writer, message) {
+        return if writer.exceeded_limit {
+            Err(PayloadError::TooLarge)
+        } else {
+            Err(PayloadError::Serialization(error))
+        };
+    }
+    if writer.bytes.is_empty() {
+        return Err(PayloadError::Serialization(serde_json::Error::io(
+            io::Error::new(io::ErrorKind::InvalidData, "empty JSON payload"),
+        )));
+    }
+    Ok(writer.bytes)
+}
+
+fn payload_error_to_io(error: PayloadError) -> io::Error {
+    match error {
+        PayloadError::TooLarge => invalid_data("frame exceeds the 1 MiB payload limit"),
+        PayloadError::Serialization(error) => invalid_data(error),
+    }
+}
+
+fn write_encoded_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
+    let length = u32::try_from(payload.len())
+        .map_err(|_| invalid_data("frame length cannot be represented"))?;
+    writer.write_all(&length.to_be_bytes())?;
+    writer.write_all(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use focuser_core::{BlockEngine, Database};
+
+    fn context() -> AppContext {
+        AppContext::new_headless(BlockEngine::new(Database::open_in_memory().unwrap()).unwrap())
+    }
 
     #[test]
     fn request_round_trips_with_version_and_request_id() {
@@ -142,6 +301,84 @@ mod tests {
         let decoded = read_response(&mut bytes.as_slice()).unwrap();
         assert_eq!(decoded.request_id, response.request_id);
         assert!(matches!(decoded.result, Ok(CommandResult::Unit)));
+    }
+
+    #[test]
+    fn dispatch_runs_only_versioned_commands_and_preserves_request_ids() {
+        let context = context();
+        let request_id = Uuid::new_v4();
+        let response = dispatch_service_request(
+            &context,
+            RequestEnvelope::new(
+                request_id,
+                Command::CreateBlockList {
+                    name: "Study".into(),
+                },
+            ),
+        );
+        assert_eq!(response.request_id, request_id);
+        assert!(matches!(response.result, Ok(CommandResult::BlockList(_))));
+
+        let request_id = Uuid::new_v4();
+        let response = dispatch_service_request(
+            &context,
+            RequestEnvelope {
+                version: PROTOCOL_VERSION + 1,
+                request_id,
+                command: Command::CreateBlockList {
+                    name: "Must not be created".into(),
+                },
+            },
+        );
+        assert_eq!(response.request_id, request_id);
+        assert!(matches!(
+            response.result,
+            Err(CommandErrorPayload { code, .. }) if code == "unsupported_protocol_version"
+        ));
+        assert_eq!(
+            context
+                .engine
+                .lock()
+                .unwrap()
+                .db()
+                .list_block_lists()
+                .unwrap()
+                .len(),
+            1,
+            "an unsupported version must not execute its command"
+        );
+    }
+
+    #[test]
+    fn dispatch_returns_stable_command_error_codes() {
+        let context = context();
+        let request_id = Uuid::new_v4();
+        let response = dispatch_service_request(
+            &context,
+            RequestEnvelope::new(request_id, Command::DeleteBlockList { id: Uuid::new_v4() }),
+        );
+        assert_eq!(response.request_id, request_id);
+        assert!(matches!(
+            response.result,
+            Err(CommandErrorPayload { code, .. }) if code == "block_list_not_found"
+        ));
+    }
+
+    #[test]
+    fn service_dispatch_rejects_ui_only_icon_loading() {
+        let response = dispatch_service_request(
+            &context(),
+            RequestEnvelope::new(
+                Uuid::new_v4(),
+                Command::GetAppIcons {
+                    targets: vec![r"C:\private\program.exe".into()],
+                },
+            ),
+        );
+        assert!(matches!(
+            response.result,
+            Err(CommandErrorPayload { code, .. }) if code == "command_not_supported_by_service"
+        ));
     }
 
     #[test]
@@ -181,6 +418,63 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn writes_are_capped_before_a_frame_header_is_sent() {
+        let exactly_at_limit = "x".repeat(MAX_FRAME_BYTES - 2);
+        let mut exact = Vec::new();
+        write_frame(&mut exact, &exactly_at_limit).unwrap();
+        assert_eq!(
+            u32::from_be_bytes(exact[..4].try_into().unwrap()) as usize,
+            MAX_FRAME_BYTES
+        );
+        assert_eq!(exact.len(), MAX_FRAME_BYTES + 4);
+
+        let over_limit = "x".repeat(MAX_FRAME_BYTES - 1);
+        let mut rejected = Vec::new();
+        assert_eq!(
+            write_frame(&mut rejected, &over_limit).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(rejected.is_empty(), "partial frames must not be emitted");
+    }
+
+    #[test]
+    fn oversized_responses_return_a_small_correlated_error_frame() {
+        let request_id = Uuid::new_v4();
+        let response = ResponseEnvelope::new(
+            request_id,
+            Ok(CommandResult::Text("x".repeat(MAX_FRAME_BYTES))),
+        );
+        let mut bytes = Vec::new();
+        write_response(&mut bytes, &response).unwrap();
+
+        let decoded = read_response(&mut bytes.as_slice()).unwrap();
+        assert_eq!(decoded.request_id, request_id);
+        assert!(matches!(
+            decoded.result,
+            Err(CommandErrorPayload { code, .. }) if code == OVERSIZED_RESPONSE_CODE
+        ));
+    }
+
+    #[test]
+    fn truncated_headers_and_bodies_fail_with_unexpected_eof() {
+        let mut short_header = [0, 0].as_slice();
+        assert_eq!(
+            read_frame::<_, RequestEnvelope>(&mut short_header)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+
+        let mut short_body = [0, 0, 0, 2, b'{'].as_slice();
+        assert_eq!(
+            read_frame::<_, RequestEnvelope>(&mut short_body)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
         );
     }
 
