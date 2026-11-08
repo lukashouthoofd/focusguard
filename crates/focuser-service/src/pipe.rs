@@ -778,10 +778,34 @@ mod tests {
             "service_command_not_supported"
         );
 
+        let app_rule_response = send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::AddAppRule {
+                list_id: list.id,
+                rule: focuser_common::types::AppMatchType::ExecutableName("game.exe".into()),
+            },
+        )
+        .await;
+        assert_eq!(
+            app_rule_response.result.unwrap_err().code,
+            "service_command_not_supported"
+        );
+
         assert!(!service_policy_command_allowed(&Command::RemoveBlocks));
         assert!(service_policy_command_allowed(&Command::AddWebsiteRule {
             list_id: list.id,
             rule: WebsiteMatchType::Domain("example.com".into()),
+        }));
+        assert!(!service_policy_command_allowed(&Command::AddAppRule {
+            list_id: list.id,
+            rule: focuser_common::types::AppMatchType::ExecutableName("game.exe".into()),
+        }));
+        assert!(!service_policy_command_allowed(&Command::AddAppRule {
+            list_id: list.id,
+            rule: focuser_common::types::AppMatchType::ExecutablePath(r"C:\Games\game.exe".into(),),
         }));
     }
 

@@ -85,8 +85,8 @@ impl Database {
         let rows = stmt
             .query_map([], row_to_allowance)
             .map_err(|e| FocuserError::Database(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| FocuserError::Database(e.to_string()))?;
         Ok(rows)
     }
 
@@ -242,4 +242,24 @@ fn row_to_allowance(row: &rusqlite::Row<'_>) -> rusqlite::Result<Allowance> {
         enabled: enabled != 0,
         created_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowance_listing_reports_malformed_durable_policy() {
+        let db = Database::open_in_memory().unwrap();
+        db.conn_lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO allowances (id, match_type, match_value, daily_limit_secs, strict_mode, enabled, created_at)
+                 VALUES ('not-a-uuid', 'app', 'game.exe', 600, 1, 1, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+
+        assert!(db.list_allowances().is_err());
+    }
 }

@@ -176,10 +176,18 @@ mod windows_service_host {
         ))?;
 
         let reconcile_context = Arc::clone(&context);
+        let app_reconcile_context = Arc::clone(&context);
+        let app_owner_sid = owner_sid.clone();
+        let service_pid = std::process::id();
         let result = runtime.block_on(async move {
             tokio::select! {
                 result = pipe::serve(owner_sid, service_sid, listener, context, true) => result.context("named-pipe server stopped"),
                 _ = enforcement::run_reconciler(reconcile_context) => Ok(()),
+                _ = focuser_service::app_enforcement::run_app_enforcement_reconciler(
+                    app_reconcile_context,
+                    app_owner_sid,
+                    service_pid,
+                ) => Ok(()),
                 _ = shutdown_rx => Ok(()),
             }
         });

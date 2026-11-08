@@ -179,6 +179,31 @@ impl Database {
         Ok(lists)
     }
 
+    /// Load every durable block list without silently dropping a row that
+    /// fails to decode. Service-owned enforcement uses this so a malformed
+    /// record cannot make an active rule disappear from its policy snapshot.
+    pub fn list_block_lists_strict(&self) -> Result<Vec<BlockList>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| FocuserError::Database(e.to_string()))?;
+        let mut stmt = conn
+            .prepare("SELECT data FROM block_lists ORDER BY created_at")
+            .map_err(|e| FocuserError::Database(e.to_string()))?;
+        let json_rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| FocuserError::Database(e.to_string()))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| FocuserError::Database(e.to_string()))?;
+        json_rows
+            .into_iter()
+            .map(|json| {
+                serde_json::from_str::<BlockList>(&json)
+                    .map_err(|e| FocuserError::Database(e.to_string()))
+            })
+            .collect()
+    }
+
     // ─── Unlock challenges ──────────────────────────────────
 
     /// The outstanding random-text challenge for a block list, stored as
@@ -552,6 +577,23 @@ mod tests {
             assert!(!engine.has_service_protection());
             assert!(engine.active_protection_info().is_empty());
         }
+    }
+
+    #[test]
+    fn strict_block_list_load_reports_malformed_durable_policy() {
+        let db = Database::open_in_memory().unwrap();
+        let list = BlockList::new("Valid");
+        db.create_block_list(&list).unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE block_lists SET data='{}' WHERE id=?1",
+                rusqlite::params![list.id.to_string()],
+            )
+            .unwrap();
+
+        assert!(db.list_block_lists_strict().is_err());
     }
 
     #[test]

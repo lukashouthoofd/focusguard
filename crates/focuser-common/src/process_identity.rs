@@ -5,11 +5,13 @@
 //! session, image path, and creation time; termination opens a fresh handle and
 //! verifies every field before acting on that process object.
 
-use std::{ffi::c_void, io, mem::size_of, path::Path, ptr::null_mut};
+use std::{collections::HashSet, ffi::c_void, io, mem::size_of, path::Path, ptr::null_mut};
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, FILETIME, HANDLE, LocalFree},
+    Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, FILETIME, HANDLE, LocalFree,
+    },
     Security::Authorization::ConvertSidToStringSidW,
     Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenSessionId, TokenUser},
     System::{
@@ -80,6 +82,90 @@ pub fn list_processes() -> Vec<ProcessIdentity> {
         found = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
     }
     processes
+}
+
+/// Return a process snapshot only when ToolHelp enumeration and every live
+/// process identity query completed. A process that exited between the PID
+/// listing and metadata query is safely skipped; any other query failure makes
+/// the whole snapshot incomplete so enforcement cannot cancel or terminate
+/// targets based on missing identities.
+pub fn list_processes_complete() -> io::Result<Vec<ProcessIdentity>> {
+    enumerate_processes_complete(None)
+}
+
+/// Return complete identities only for processes whose ToolHelp executable
+/// name matches one of `executable_names`. Unrelated protected/system
+/// processes are skipped without opening them; a query failure for any
+/// matching live PID still makes the snapshot incomplete.
+pub fn list_processes_matching_complete(
+    executable_names: &[String],
+) -> io::Result<Vec<ProcessIdentity>> {
+    let names: HashSet<String> = executable_names
+        .iter()
+        .map(|name| name.to_lowercase())
+        .collect();
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    enumerate_processes_complete(Some(&names))
+}
+
+fn enumerate_processes_complete(
+    matching_names: Option<&HashSet<String>>,
+) -> io::Result<Vec<ProcessIdentity>> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot.is_null() || snapshot as isize == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let snapshot = OwnedHandle(snapshot);
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    if unsafe { Process32FirstW(snapshot.0, &mut entry) } == 0 {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+            Ok(Vec::new())
+        } else {
+            Err(error)
+        };
+    }
+
+    let mut processes = Vec::new();
+    loop {
+        let pid = entry.th32ProcessID;
+        if pid > MIN_USER_PID
+            && matching_names.is_none_or(|names| {
+                process_entry_name(&entry.szExeFile)
+                    .is_some_and(|name| names.contains(&name.to_lowercase()))
+            })
+        {
+            match snapshot_process(pid) {
+                Ok(identity) => processes.push(identity),
+                // The process disappeared after ToolHelp captured its PID.
+                // It cannot be a live target and is safe to omit.
+                Err(error) if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        if unsafe { Process32NextW(snapshot.0, &mut entry) } == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+                break;
+            }
+            return Err(error);
+        }
+    }
+    Ok(processes)
+}
+
+fn process_entry_name(buffer: &[u16]) -> Option<String> {
+    let end = buffer
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(buffer.len());
+    (end > 0).then(|| String::from_utf16_lossy(&buffer[..end]))
 }
 
 /// Read one process through a query-only handle. This is also useful for
@@ -332,6 +418,30 @@ mod tests {
             .find(|process| process.pid == std::process::id())
             .expect("process enumeration should include this test process");
         assert_eq!(current, snapshot_process(std::process::id()).unwrap());
+    }
+
+    #[test]
+    fn complete_process_enumeration_includes_the_current_test_process() {
+        let expected = snapshot_process(std::process::id()).unwrap();
+        let current = list_processes_matching_complete(std::slice::from_ref(&expected.image_name))
+            .unwrap()
+            .into_iter()
+            .find(|process| process.pid == std::process::id())
+            .expect("matching complete enumeration should include this test process");
+        assert_eq!(current, expected);
+    }
+
+    #[test]
+    fn matching_complete_enumeration_skips_unrelated_processes() {
+        let current = snapshot_process(std::process::id()).unwrap();
+        let no_match = format!("focusguard-no-such-process-{}.exe", uuid::Uuid::new_v4());
+        assert!(
+            list_processes_matching_complete(&[no_match])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(list_processes_matching_complete(&[]).unwrap().is_empty());
+        assert!(!current.image_name.is_empty());
     }
 
     #[test]
