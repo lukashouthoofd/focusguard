@@ -208,8 +208,16 @@ jobs:
         run: npm run build:firefox
 
   package-macos:
-    name: macOS DMG package check
-    runs-on: macos-latest
+    name: macOS DMG (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: macos-26-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
@@ -225,10 +233,10 @@ jobs:
       - name: Build CLI sidecar
         shell: bash
         run: |
-          cargo build --locked --release -p focuser-cli
+          test "$(rustc -vV | awk '/^host:/ {print $2}')" = "${{ matrix.target }}"
+          cargo build --locked --release --target "${{ matrix.target }}" -p focuser-cli
           mkdir -p crates/focuser-ui/binaries
-          host=$(rustc -vV | awk '/^host:/ {print $2}')
-          cp "target/release/focuser-cli" "crates/focuser-ui/binaries/focuser-cli-$host"
+          cp "target/${{ matrix.target }}/release/focuser-cli" "crates/focuser-ui/binaries/focuser-cli-${{ matrix.target }}"
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version 2.10.1
@@ -236,5 +244,5 @@ jobs:
       - name: Build unsigned DMG without updater artifacts
         working-directory: crates/focuser-ui
         run: |
-          cargo tauri build --bundles dmg --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
-          test -n "$(find ../../target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          cargo tauri build --target "${{ matrix.target }}" --bundles dmg --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          test -n "$(find ../../target/${{ matrix.target }}/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"

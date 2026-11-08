@@ -2,9 +2,16 @@
   "productName": "FocusGuard",
   "identifier": "com.publikhq.focusguard",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": {
+      "script": "npm run dev",
+      "cwd": "frontend",
+      "wait": false
+    },
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm ci && npm run build",
+    "beforeBuildCommand": {
+      "script": "npm ci && npm run build",
+      "cwd": "frontend"
+    },
     "frontendDist": "./frontend/dist"
   },
   "app": {

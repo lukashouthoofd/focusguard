@@ -10,13 +10,12 @@ use std::{ffi::c_void, io, mem::size_of, path::Path, ptr::null_mut};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME, HANDLE, LocalFree},
     Security::Authorization::ConvertSidToStringSidW,
-    Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser},
+    Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenSessionId, TokenUser},
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
             TH32CS_SNAPPROCESS,
         },
-        RemoteDesktop::ProcessIdToSessionId,
         Threading::{
             GetProcessTimes, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
             PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
@@ -138,10 +137,11 @@ fn identity_from_handle(pid: u32, process: HANDLE) -> io::Result<ProcessIdentity
         return Err(io::Error::last_os_error());
     }
 
-    let mut session_id = 0;
-    if unsafe { ProcessIdToSessionId(pid, &mut session_id) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
+    // Query the session through the token tied to this open process handle.
+    // ProcessIdToSessionId(pid) would look the PID up again and could observe
+    // a different process if the original exits and Windows reuses its PID.
+    let token = process_token(process)?;
+    let session_id = process_session_id(token.0)?;
 
     let image_path = process_image_path(process)?;
     let image_name = Path::new(&image_path)
@@ -153,7 +153,7 @@ fn identity_from_handle(pid: u32, process: HANDLE) -> io::Result<ProcessIdentity
     Ok(ProcessIdentity {
         pid,
         session_id,
-        owner_sid: process_owner_sid(process)?,
+        owner_sid: process_owner_sid(token.0)?,
         image_path,
         image_name,
         creation_time: (u64::from(creation.dwHighDateTime) << 32)
@@ -170,22 +170,48 @@ fn process_image_path(process: HANDLE) -> io::Result<String> {
     Ok(String::from_utf16_lossy(&buffer[..length as usize]))
 }
 
-fn process_owner_sid(process: HANDLE) -> io::Result<String> {
+fn process_token(process: HANDLE) -> io::Result<OwnedHandle> {
     let mut token = null_mut();
     if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    let token = OwnedHandle(token);
+    Ok(OwnedHandle(token))
+}
 
+fn process_session_id(token: HANDLE) -> io::Result<u32> {
+    let mut session_id = 0u32;
+    let mut returned = 0;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenSessionId,
+            (&mut session_id as *mut u32).cast(),
+            size_of::<u32>() as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if returned as usize != size_of::<u32>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "process token returned an invalid session ID length",
+        ));
+    }
+    Ok(session_id)
+}
+
+fn process_owner_sid(token: HANDLE) -> io::Result<String> {
     let mut required = 0;
-    unsafe { GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut required) };
+    unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut required) };
     if required == 0 {
         return Err(io::Error::last_os_error());
     }
     let mut storage = vec![0usize; (required as usize).div_ceil(size_of::<usize>())];
     if unsafe {
         GetTokenInformation(
-            token.0,
+            token,
             TokenUser,
             storage.as_mut_ptr().cast(),
             required,

@@ -221,7 +221,9 @@ pub fn apply_hosts_blocks(domains: &[String]) -> Result<(), String> {
         info!(count = domains.len(), "Hosts file updated");
     }
     if HOSTS_DNS_FLUSH_PENDING.load(Ordering::Relaxed) {
-        flush_dns()?;
+        flush_dns().map_err(|error| {
+            format!("hosts file is updated, but the system DNS cache flush failed: {error}")
+        })?;
         HOSTS_DNS_FLUSH_PENDING.store(false, Ordering::Relaxed);
     }
     Ok(())
@@ -627,6 +629,30 @@ fn hosts_path() -> String {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn run_checked_command(
+    command: &mut std::process::Command,
+    description: &str,
+) -> Result<(), String> {
+    let output = command
+        .output()
+        .map_err(|error| format!("{description} could not run: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        Err(format!("{description} exited with {}", output.status))
+    } else {
+        Err(format!(
+            "{description} exited with {}: {detail}",
+            output.status
+        ))
+    }
+}
+
 fn flush_dns() -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -658,9 +684,7 @@ fn flush_dns() -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("dscacheutil")
-            .args(["-flushcache"])
-            .output();
+        flush_macos_dns(run_checked_command)?;
     }
     #[cfg(target_os = "linux")]
     {
@@ -671,9 +695,119 @@ fn flush_dns() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn flush_macos_dns(
+    mut run: impl FnMut(&mut std::process::Command, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut directory_cache = std::process::Command::new("/usr/bin/dscacheutil");
+    directory_cache.args(["-flushcache"]);
+    run(&mut directory_cache, "dscacheutil -flushcache")?;
+
+    // macOS answers normal DNS queries through mDNSResponder. Clearing the
+    // Directory Service cache alone does not invalidate its resolver cache.
+    let mut resolver_cache = std::process::Command::new("/usr/bin/killall");
+    resolver_cache.args(["-HUP", "mDNSResponder"]);
+    run(&mut resolver_cache, "killall -HUP mDNSResponder")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_browser_subprocess;
+    use super::{flush_macos_dns, is_browser_subprocess, run_checked_command};
+
+    #[test]
+    fn macos_dns_flush_requests_directory_and_resolver_cache_flushes_in_order() {
+        let mut seen = Vec::new();
+        flush_macos_dns(|command, description| {
+            seen.push((
+                command.get_program().to_string_lossy().into_owned(),
+                command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+                description.to_string(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            seen,
+            [
+                (
+                    "/usr/bin/dscacheutil".into(),
+                    vec!["-flushcache".into()],
+                    "dscacheutil -flushcache".into(),
+                ),
+                (
+                    "/usr/bin/killall".into(),
+                    vec!["-HUP".into(), "mDNSResponder".into()],
+                    "killall -HUP mDNSResponder".into(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn macos_dns_flush_stops_and_reports_resolver_cache_failure() {
+        let mut calls = 0;
+        let error = flush_macos_dns(|_, description| {
+            calls += 1;
+            if calls == 2 {
+                Err(format!("{description} failed"))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+
+        assert_eq!(calls, 2);
+        assert_eq!(error, "killall -HUP mDNSResponder failed");
+    }
+
+    #[test]
+    fn checked_command_reports_nonzero_exit() {
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.args(["-c", "exit 7"]);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("cmd.exe");
+            command.args(["/C", "exit 7"]);
+            command
+        };
+
+        let error = run_checked_command(&mut command, "test command").unwrap_err();
+        assert!(error.contains("test command exited with"));
+    }
+
+    #[test]
+    fn checked_command_reports_a_missing_program() {
+        let missing = std::env::temp_dir().join(format!(
+            "focusguard-missing-command-{}.exe",
+            uuid::Uuid::new_v4()
+        ));
+        let mut command = std::process::Command::new(missing);
+
+        let error = run_checked_command(&mut command, "test command").unwrap_err();
+        assert!(error.contains("test command could not run:"));
+    }
+
+    #[test]
+    fn checked_command_accepts_success() {
+        #[cfg(unix)]
+        let mut command = std::process::Command::new("true");
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("cmd.exe");
+            command.args(["/C", "exit 0"]);
+            command
+        };
+
+        run_checked_command(&mut command, "test command").unwrap();
+    }
 
     fn engine_with_app_rules(
         rules: Vec<focuser_common::types::AppRule>,

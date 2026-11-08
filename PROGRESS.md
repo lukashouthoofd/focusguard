@@ -2,8 +2,9 @@
 
 ## 2026-11-08 - macOS bundle packaging check
 
-- Added the generated `icons/icon.icns` to the Tauri bundle inputs and added a `macos-latest` CI job that builds an unsigned DMG with updater artifacts disabled. The job is a packaging smoke test; it does not sign or notarize a distributable release.
-- Local checks confirm `tauri.conf.json` parses, the configured ICNS has a valid `icns` header with a matching 1,607,996-byte declared/file size, and the CI workflow parses as YAML. This Windows host cannot run the macOS bundle build, so the new job still needs a CI run before DMG packaging is proven.
+- Added the generated `icons/icon.icns` to the Tauri bundle inputs and added a two-architecture CI matrix: `macos-latest` for Apple silicon and `macos-26-intel` for Intel. Each job builds an unsigned DMG with updater artifacts disabled. The earlier single-architecture run, CI `42481004385`, passed and produced a DMG; the Intel matrix still needs its own CI run. The smoke job checks that a DMG exists, not its mounted contents, and it does not sign or notarize a distributable release.
+- Local checks confirm `tauri.conf.json` parses, the configured ICNS has a valid `icns` header with a matching 1,607,996-byte declared/file size, and the matrix workflow parses as YAML. [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) maps `macos-latest` to ARM64 and `macos-26-intel` to x64. This Windows host cannot run either macOS bundle build.
+- The macOS path now attempts both `dscacheutil -flushcache` and `killall -HUP mDNSResponder`, checks each command's launch and exit status, keeps failed flushes pending for retry, and reports cache-flush errors separately from hosts-file write permission errors. Windows tests cover command order, failure propagation, command launch failure, and nonzero exits; the real macOS resolver path remains untested here.
 - macOS remains functionally incomplete: the app runs enforcement in the desktop process, and editing `/etc/hosts` requires administrator rights. There is no persistent macOS enforcement daemon, installer lifecycle, launch/recovery evidence, or end-to-end browser/app blocking test. Do not describe this as full Cold Turkey parity or a release-ready Mac app.
 
 ## 2026-11-08 - Authenticated Windows service client
@@ -87,7 +88,7 @@ The public repository was created at <https://github.com/lukashouthoofd/focusgua
 
 ## 2026-11-08 - Windows process identity prerequisite
 
-- Added a Windows-only service process snapshot that records PID, session ID, owner SID, image path/name, and creation time. Any future service termination must reopen the process, compare the complete identity and configured owner SID, then terminate through that same handle; PID reuse cannot redirect a validated action.
+- Added a Windows-only service process snapshot that records PID, session ID, owner SID, image path/name, and creation time. The session ID comes from the token tied to the opened process handle, avoiding a second lookup by PID. Any future service termination must reopen the process, compare the complete identity and configured owner SID, then terminate through that same handle; PID reuse cannot redirect a validated action.
 - The primitive refuses PID reuse, other-owner processes, session 0, FocusGuard executable names, and the service's own PID. Windows tests successfully terminate only a copied sacrificial test executable and verify owner mismatch, stale identity, and protected-target rejection.
 - This is groundwork, not an app blocker: it is not wired into the SCM service loop and app-rule mutations remain denied. Session 0 cannot use the desktop's `WM_CLOSE` flow for another session, so active WTS session selection and a per-session helper for save prompts/grace handling are required before enabling app rules. No SCM identity, other-user, or VM behavior has been tested.
 
