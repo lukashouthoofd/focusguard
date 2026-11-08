@@ -17,7 +17,7 @@ use focuser_common::extension::BrowserType;
 use tracing::{debug, error, info};
 
 use crate::AppState;
-use focuser_common::host::{any_host_matches, canonical_host};
+use focuser_common::host::any_host_matches;
 use focuser_common::types::WebsiteMatchType;
 
 /// Flag to request the main window to show itself.
@@ -596,70 +596,12 @@ fn api_rules(state: &AppState) -> (&'static str, String) {
     // with that turned off it is never sent.
     rules.locked &= guards_extensions_page(eng.db());
 
-    let mut domain_categories: HashMap<String, String> = HashMap::new();
-    for list in eng.block_lists().iter().filter(|l| l.enabled) {
-        let category = normalize_category(&list.name);
-        for rule in &list.websites {
-            if let focuser_common::types::WebsiteMatchType::Domain(ref d) = rule.match_type {
-                domain_categories.insert(canonical_host(d), category.clone());
-            }
-        }
-    }
-
-    let mut response = serde_json::to_value(&rules).unwrap_or_default();
-    if let Some(obj) = response.as_object_mut() {
-        obj.insert(
-            "domain_categories".to_string(),
-            serde_json::to_value(&domain_categories).unwrap_or_default(),
-        );
-    }
-
-    ("200 OK", response.to_string())
+    ("200 OK", serde_json::to_string(&rules).unwrap_or_default())
 }
 
 fn guards_extensions_page(db: &focuser_core::db::Database) -> bool {
     db.get_setting_or_default(focuser_app::execute::SETTING_GUARD_EXTENSIONS_PAGE, "true")
         .map_or(true, |v| v != "false")
-}
-
-fn normalize_category(list_name: &str) -> String {
-    let name = list_name.to_lowercase();
-    for (keyword, category) in [
-        ("porn", "adult"),
-        ("adult", "adult"),
-        ("nsfw", "adult"),
-        ("xxx", "adult"),
-        ("social", "social_media"),
-        ("instagram", "social_media"),
-        ("facebook", "social_media"),
-        ("twitter", "social_media"),
-        ("tiktok", "social_media"),
-        ("video", "video"),
-        ("stream", "video"),
-        ("youtube", "video"),
-        ("netflix", "video"),
-        ("entertain", "video"),
-        ("dating", "dating"),
-        ("tinder", "dating"),
-        ("bumble", "dating"),
-        ("gaming", "gaming"),
-        ("game", "gaming"),
-        ("steam", "gaming"),
-        ("news", "news"),
-        ("reddit", "news"),
-        ("forum", "news"),
-        ("shop", "shopping"),
-        ("amazon", "shopping"),
-        ("ebay", "shopping"),
-        ("gambling", "gambling"),
-        ("betting", "gambling"),
-        ("casino", "gambling"),
-    ] {
-        if name.contains(keyword) {
-            return category.to_string();
-        }
-    }
-    "default".to_string()
 }
 
 fn api_check_domain(path: &str, state: &AppState) -> (&'static str, String) {

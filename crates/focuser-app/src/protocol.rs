@@ -245,6 +245,7 @@ fn service_command_allowed(command: &Command) -> bool {
             | Command::SetSetting { .. }
             | Command::ResetSettings
             | Command::GetBlockingHealth
+            | Command::GetExtensionRules
             | Command::ApplyBlocks
             | Command::RemoveBlocks
             | Command::PomodoroStatus

@@ -1459,6 +1459,8 @@ dependencies = [
  "anyhow",
  "clap",
  "directories",
+ "focuser-app",
+ "focuser-client",
  "focuser-common",
  "serde",
  "serde_json",

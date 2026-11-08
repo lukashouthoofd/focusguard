@@ -187,6 +187,15 @@ pub fn print_human(result: &CommandResult) {
             }
         }
 
+        CommandResult::ExtensionRules(rules) => println!(
+            "{} domains, {} keywords, {} wildcards, {} URL paths{}",
+            rules.blocked_domains.len(),
+            rules.blocked_keywords.len(),
+            rules.blocked_wildcards.len(),
+            rules.blocked_url_paths.len(),
+            if rules.locked { " (locked)" } else { "" },
+        ),
+
         CommandResult::Allowance(a) => println!("{}  {}", a.id, a.target.display()),
 
         CommandResult::Allowances(statuses) if statuses.is_empty() => println!("No allowances."),

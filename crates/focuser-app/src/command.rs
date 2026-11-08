@@ -223,6 +223,8 @@ pub enum Command {
     // ─── Enforcement ──────────────────────────────────────────────
     /// Whether blocking is actually in force right now, and why not if it isn't.
     GetBlockingHealth,
+    /// Current compiled rules for the browser extension.
+    GetExtensionRules,
     /// Push the current blocked-domain set to the hosts file now.
     ApplyBlocks,
     /// Remove FocusGuard's hosts-file entries.
@@ -433,6 +435,7 @@ pub enum CommandResult {
     ScheduledProtectionStatus(Vec<ScheduledProtectionStatus>),
     SharedAllowanceStatus(Vec<focuser_common::allowance::SharedAllowanceStatus>),
     BlockingHealth(BlockingHealth),
+    ExtensionRules(focuser_common::extension::ExtensionRuleSet),
     /// A setting value; `None` when unset and no default was supplied.
     Setting(Option<String>),
     /// A yes/no outcome — e.g. "was a session actually paused".

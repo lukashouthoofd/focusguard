@@ -209,6 +209,7 @@ fn service_policy_command_allowed(command: &Command) -> bool {
             | Command::ClearAllWebsites
             | Command::UpdateSchedule { .. }
             | Command::GetBlockingHealth
+            | Command::GetExtensionRules
             | Command::ApplyBlocks
     )
 }
@@ -738,6 +739,32 @@ mod tests {
         .unwrap()
         .clone();
 
+        send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::AddWebsiteRule {
+                list_id: list.id,
+                rule: WebsiteMatchType::Domain("example.com".into()),
+            },
+        )
+        .await
+        .result
+        .unwrap();
+        let rules_response = send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::GetExtensionRules,
+        )
+        .await;
+        let CommandResult::ExtensionRules(rules) = rules_response.result.unwrap() else {
+            panic!("expected extension rules from the service pipe");
+        };
+        assert!(rules.blocked_domains.contains(&"example.com".to_string()));
+
         for rule in [
             WebsiteMatchType::Keyword("casino".into()),
             WebsiteMatchType::Wildcard("*.example.com".into()),
@@ -795,6 +822,7 @@ mod tests {
         );
 
         assert!(!service_policy_command_allowed(&Command::RemoveBlocks));
+        assert!(service_policy_command_allowed(&Command::GetExtensionRules));
         assert!(service_policy_command_allowed(&Command::AddWebsiteRule {
             list_id: list.id,
             rule: WebsiteMatchType::Domain("example.com".into()),

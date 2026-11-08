@@ -1,60 +1,17 @@
-//! IPC client — sends requests to the FocusGuard service.
-//!
-//! Duplicated from focuser-cli to avoid adding tokio to focuser-common.
+//! Narrow adapter from the browser host to the authenticated Windows service.
 
-use anyhow::Result;
-use focuser_common::ipc::{IpcRequest, IpcResponse};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use anyhow::{Result, bail};
+use focuser_app::{Command, CommandResult};
+use focuser_common::extension::ExtensionRuleSet;
 
-/// Send a request to the FocusGuard service and return the response.
-pub async fn send(request: IpcRequest) -> Result<IpcResponse> {
-    #[cfg(windows)]
-    {
-        send_tcp(request).await
+/// Read the current extension rules through the pipe that authenticates the
+/// running SCM service process. The browser host never opens a loopback port.
+pub async fn get_extension_rules() -> Result<ExtensionRuleSet> {
+    if !focuser_client::is_service_registered()? {
+        bail!("FocusGuard Windows service is not installed");
     }
-    #[cfg(unix)]
-    {
-        send_unix(request).await
+    match focuser_client::execute(Command::GetExtensionRules).await? {
+        CommandResult::ExtensionRules(rules) => Ok(rules),
+        other => bail!("service returned an unexpected response: {other:?}"),
     }
-}
-
-#[cfg(windows)]
-async fn send_tcp(request: IpcRequest) -> Result<IpcResponse> {
-    let stream = tokio::net::TcpStream::connect("127.0.0.1:17593")
-        .await
-        .map_err(|_| anyhow::anyhow!("Cannot connect to FocusGuard service. Is it running?"))?;
-
-    let (reader, mut writer) = stream.into_split();
-
-    let req_json = serde_json::to_string(&request)?;
-    writer.write_all(format!("{req_json}\n").as_bytes()).await?;
-
-    let mut buf_reader = BufReader::new(reader);
-    let mut line = String::new();
-    buf_reader.read_line(&mut line).await?;
-
-    let response: IpcResponse = serde_json::from_str(line.trim())?;
-    Ok(response)
-}
-
-#[cfg(unix)]
-async fn send_unix(request: IpcRequest) -> Result<IpcResponse> {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    let path = format!("{runtime_dir}/focuser.sock");
-
-    let stream = tokio::net::UnixStream::connect(&path)
-        .await
-        .map_err(|_| anyhow::anyhow!("Cannot connect to FocusGuard service. Is it running?"))?;
-
-    let (reader, mut writer) = stream.into_split();
-
-    let req_json = serde_json::to_string(&request)?;
-    writer.write_all(format!("{req_json}\n").as_bytes()).await?;
-
-    let mut buf_reader = BufReader::new(reader);
-    let mut line = String::new();
-    buf_reader.read_line(&mut line).await?;
-
-    let response: IpcResponse = serde_json::from_str(line.trim())?;
-    Ok(response)
 }

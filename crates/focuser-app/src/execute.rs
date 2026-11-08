@@ -563,6 +563,23 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
             }))
         }
 
+        Command::GetExtensionRules => {
+            let allowance_exceptions = ctx.allowance_exempt_domains(&engine);
+            let spent_domains: Vec<String> = ctx
+                .allowance_tracker
+                .blocked_domains()
+                .into_iter()
+                .filter(|domain| !engine.shared_covers_domain(domain))
+                .collect();
+            let mut rules = engine
+                .compile_extension_rules_with_allowances(&allowance_exceptions, &spent_domains);
+            rules.locked &= engine
+                .db()
+                .get_setting_or_default(SETTING_GUARD_EXTENSIONS_PAGE, "true")?
+                != "false";
+            Ok(CommandResult::ExtensionRules(rules))
+        }
+
         Command::ApplyBlocks => {
             ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Unit)
@@ -1199,6 +1216,31 @@ mod tests {
         .as_block_list()
         .unwrap()
         .clone()
+    }
+
+    #[test]
+    fn extension_rules_command_returns_compiled_domains_categories_and_lock_state() {
+        let ctx = ctx();
+        let list = create(&ctx, "Gaming sites");
+        execute(
+            &ctx,
+            Command::AddWebsiteRule {
+                list_id: list.id,
+                rule: WebsiteMatchType::Domain("steam.com".into()),
+            },
+        )
+        .unwrap();
+        protect(&ctx, list.id).unwrap();
+
+        let CommandResult::ExtensionRules(rules) =
+            execute(&ctx, Command::GetExtensionRules).unwrap()
+        else {
+            panic!("expected extension rules");
+        };
+
+        assert!(rules.blocked_domains.contains(&"steam.com".to_string()));
+        assert_eq!(rules.domain_categories.get("steam.com").unwrap(), "gaming");
+        assert!(rules.locked);
     }
 
     #[test]

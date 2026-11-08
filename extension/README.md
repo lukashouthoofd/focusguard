@@ -98,19 +98,27 @@ read after the second visit. Roughly 40% of them carry `{count}` / `{domain}`
 placeholders — `messageFor` substitutes them, and a test fails if any rendered
 message still contains braces.
 
-**No Native Messaging.** The old extension tried a native host first and fell
-back to HTTP after three failures. That host has had nothing to connect to
-since the standalone service was removed, so the attempt only cost startup
-latency. HTTP on `127.0.0.1:17593` is the only transport.
+**Windows service rule transport.** When the Windows Native Messaging host and
+SCM service are installed, the extension keeps a Native Messaging port open
+and reads compiled rules through the service's authenticated named pipe. It
+falls back to the desktop app's loopback API when that host is unavailable.
+The host manifest must name the exact Chrome extension ID; wildcard Chrome
+origins are rejected. Firefox uses the fixed `focusguard@publikhq.com` ID.
 
-**Permissions were trimmed.** `webRequest` and `nativeMessaging` were declared
-and never used; both cost store-review scrutiny for nothing.
+This is only the rule-read path so far. Heartbeats, block reports, and
+allowance-time reports still use the desktop HTTP API. They do not reach the
+service while the desktop UI is closed, so service-side extension presence,
+statistics, and allowance timing are not yet complete. The extension's
+`nativeMessaging` permission is used for the rule path; it does not grant the
+extension authority to call arbitrary service commands.
 
 ## Privacy
 
-Everything stays on the machine. The extension talks to `127.0.0.1:17593` and
-nothing else — there is no remote endpoint anywhere in this codebase. Category
-labels come from a file bundled with the extension, not from a lookup service.
+Policy rules and browser reports stay on the machine. In desktop mode the
+extension talks to `127.0.0.1:17593`; on supported Windows service installs it
+also reads rules through Native Messaging and the local named pipe. YouTube
+channel rules can query YouTube to resolve a video's channel. Category labels
+come from a file bundled with the extension, not a lookup service.
 
 ## Building from source
 

@@ -7,15 +7,7 @@
 //! Browser Extension <──stdio──> focuser-native <──IPC──> (no listener)
 //! ```
 //!
-//! **This bridge currently reaches nothing.** It forwards `IpcRequest` over TCP
-//! 17593 to the standalone service, which was removed in 0.4.2 — that port now
-//! belongs to the desktop app's HTTP extension API, which speaks a different
-//! protocol. The extension tries native messaging, fails, and falls back to
-//! polling that HTTP API, which is the path that actually works.
-//!
-//! Kept because the Native Messaging registration and framing are correct and
-//! worth reusing; it needs repointing at the desktop app before it does
-//! anything. See the extension section of README.md.
+//! Extension rule requests use a persistent Native Messaging connection and the authenticated Windows service pipe.
 
 mod ipc_client;
 
@@ -23,8 +15,7 @@ use std::io::{self, Read, Write};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use focuser_common::extension::{BrowserType, ExtensionEvent, NativeMessage, NativeMessageType};
-use focuser_common::ipc::{IpcRequest, IpcResponse};
+use focuser_common::extension::{NativeMessage, NativeMessageType};
 use tracing::{debug, error, info};
 
 #[derive(Parser)]
@@ -42,7 +33,7 @@ enum Commands {
     /// Register this binary as a Native Messaging host for browsers.
     Install {
         /// Browser extension ID (for Chrome/Chromium allowed_origins).
-        #[arg(long, default_value = "")]
+        #[arg(long)]
         extension_id: String,
     },
 }
@@ -89,15 +80,8 @@ async fn main() -> Result<()> {
 async fn run_native_host() -> Result<()> {
     info!("FocusGuard native messaging host started");
 
-    // Send Connected event to service
-    let browser = detect_parent_browser();
-    let connect_event = ExtensionEvent::Connected {
-        browser: browser.clone(),
-        extension_version: env!("CARGO_PKG_VERSION").to_string(),
-    };
-    let _ = ipc_client::send(IpcRequest::ExtensionEvent(connect_event)).await;
-
-    // Main loop: read messages from stdin, forward to service
+    // Main loop: accept typed browser-host requests and call only the
+    // authenticated service operation implemented for Native Messaging.
     loop {
         let msg = match read_native_message() {
             Ok(msg) => msg,
@@ -115,46 +99,22 @@ async fn run_native_host() -> Result<()> {
                 msg_type: NativeMessageType::Pong,
                 payload: serde_json::Value::Null,
             },
-            NativeMessageType::Event => {
-                // Deserialize the event payload
-                match serde_json::from_value::<ExtensionEvent>(msg.payload) {
-                    Ok(event) => {
-                        let ipc_resp = ipc_client::send(IpcRequest::ExtensionEvent(event)).await;
-                        match ipc_resp {
-                            Ok(resp) => NativeMessage {
-                                msg_type: NativeMessageType::Event,
-                                payload: serde_json::to_value(&resp)
-                                    .unwrap_or(serde_json::Value::Null),
-                            },
-                            Err(e) => NativeMessage {
-                                msg_type: NativeMessageType::Error,
-                                payload: serde_json::Value::String(e.to_string()),
-                            },
-                        }
-                    }
-                    Err(e) => NativeMessage {
-                        msg_type: NativeMessageType::Error,
-                        payload: serde_json::Value::String(format!("Invalid event payload: {e}")),
-                    },
-                }
-            }
-            NativeMessageType::RuleUpdate => {
-                // Extension requesting rules
-                match ipc_client::send(IpcRequest::GetExtensionRules).await {
-                    Ok(IpcResponse::ExtensionRules(rules)) => NativeMessage {
-                        msg_type: NativeMessageType::RuleUpdate,
-                        payload: serde_json::to_value(&rules).unwrap_or(serde_json::Value::Null),
-                    },
-                    Ok(resp) => NativeMessage {
-                        msg_type: NativeMessageType::RuleUpdate,
-                        payload: serde_json::to_value(&resp).unwrap_or(serde_json::Value::Null),
-                    },
-                    Err(e) => NativeMessage {
-                        msg_type: NativeMessageType::Error,
-                        payload: serde_json::Value::String(e.to_string()),
-                    },
-                }
-            }
+            NativeMessageType::Event => NativeMessage {
+                msg_type: NativeMessageType::Error,
+                payload: serde_json::Value::String(
+                    "extension event forwarding is not available yet".into(),
+                ),
+            },
+            NativeMessageType::RuleUpdate => match ipc_client::get_extension_rules().await {
+                Ok(rules) => NativeMessage {
+                    msg_type: NativeMessageType::RuleUpdate,
+                    payload: serde_json::to_value(&rules).unwrap_or(serde_json::Value::Null),
+                },
+                Err(e) => NativeMessage {
+                    msg_type: NativeMessageType::Error,
+                    payload: serde_json::Value::String(e.to_string()),
+                },
+            },
             _ => NativeMessage {
                 msg_type: NativeMessageType::Pong,
                 payload: serde_json::Value::Null,
@@ -166,12 +126,6 @@ async fn run_native_host() -> Result<()> {
             break;
         }
     }
-
-    // Send Disconnected event
-    let disconnect_event = ExtensionEvent::Disconnected {
-        browser: browser.clone(),
-    };
-    let _ = ipc_client::send(IpcRequest::ExtensionEvent(disconnect_event)).await;
 
     info!("FocusGuard native messaging host stopped");
     Ok(())
@@ -227,22 +181,15 @@ fn write_native_message(msg: &NativeMessage) -> Result<()> {
 
 // ─── Browser Detection ──────────────────────────────────────────────
 
-/// Try to detect which browser launched this native host.
-fn detect_parent_browser() -> BrowserType {
-    // The parent process is typically the browser.
-    // We can check environment variables or parent process name.
-    // For now, check common env vars set by browsers.
-    if std::env::var("CHROME_WRAPPER").is_ok() {
-        return BrowserType::Chrome;
-    }
-    // Default to Other — the extension will send a Connected event with the correct type
-    BrowserType::Other("unknown".to_string())
-}
-
 // ─── Native Messaging Host Installation ─────────────────────────────
 
 /// Install the native messaging host manifest for supported browsers.
 fn install_native_host(extension_id: &str) -> Result<()> {
+    if !is_chrome_extension_id(extension_id) {
+        anyhow::bail!(
+            "--extension-id must be the exact 32-character Chrome extension ID (letters a-p)"
+        );
+    }
     let exe_path = std::env::current_exe().context("Cannot determine executable path")?;
     let exe_str = exe_path.to_string_lossy().to_string();
 
@@ -264,24 +211,20 @@ fn install_native_host(extension_id: &str) -> Result<()> {
 
 /// Generate the native messaging host manifest JSON.
 fn host_manifest(exe_path: &str, extension_id: &str) -> String {
-    let allowed_origins = if extension_id.is_empty() {
-        // During development, allow all chrome extensions
-        "\"chrome-extension://*/\"".to_string()
-    } else {
-        format!("\"chrome-extension://{extension_id}/\"")
-    };
-
     format!(
         r#"{{
   "name": "com.focuser.native",
   "description": "FocusGuard Native Messaging Host",
   "path": "{}",
   "type": "stdio",
-  "allowed_origins": [{}]
+  "allowed_origins": ["chrome-extension://{extension_id}/"]
 }}"#,
         exe_path.replace('\\', "\\\\"),
-        allowed_origins,
     )
+}
+
+fn is_chrome_extension_id(extension_id: &str) -> bool {
+    extension_id.len() == 32 && extension_id.bytes().all(|b| (b'a'..=b'p').contains(&b))
 }
 
 /// Firefox-specific manifest (uses allowed_extensions instead of allowed_origins).
@@ -432,4 +375,30 @@ fn install_macos(exe_path: &str, extension_id: &str) -> Result<()> {
     println!("Installed for Firefox: {firefox_dir}/com.focuser.native.json");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chrome_manifest_allows_only_the_supplied_extension_id() {
+        let extension_id = "abcdefghijklmnopabcdefghijklmnop";
+        assert!(is_chrome_extension_id(extension_id));
+        let manifest = host_manifest(r"C:\FocusGuard\focuser-native.exe", extension_id);
+        let manifest: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(
+            manifest["allowed_origins"][0],
+            format!("chrome-extension://{extension_id}/")
+        );
+        assert!(!manifest.to_string().contains("chrome-extension://*/"));
+    }
+
+    #[test]
+    fn chrome_extension_id_must_be_an_exact_browser_id() {
+        assert!(!is_chrome_extension_id(""));
+        assert!(!is_chrome_extension_id("chrome-extension://*/"));
+        assert!(!is_chrome_extension_id("abcdefghijklmnopabcdefghijklmnopq"));
+        assert!(!is_chrome_extension_id("abcdefghijklmnopabcdefghijklmnox"));
+    }
 }

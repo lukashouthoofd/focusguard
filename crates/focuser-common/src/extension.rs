@@ -1,7 +1,7 @@
 //! Browser extension protocol types.
 //!
 //! This module defines the message format between the FocusGuard service and
-//! a future browser extension (Chrome/Firefox/Edge via Native Messaging).
+//! its browser extension (Chrome/Firefox/Edge via Native Messaging).
 //!
 //! The extension handles blocking capabilities that the hosts file cannot:
 //! - Keyword-in-URL blocking (e.g., block any URL containing "game")
@@ -10,8 +10,8 @@
 //! - Custom block page display
 //! - Active usage time tracking (how long a tab is focused)
 //!
-//! The service pushes blocking rules to the extension whenever they change.
-//! The extension reports back blocked attempts and usage time.
+//! The extension reads compiled rules from the service. Event and usage
+//! reporting over the service connection are not implemented yet.
 //!
 //! ## Architecture
 //!
@@ -22,13 +22,13 @@
 //!                    │  (content +   │
 //!                    │   background) │
 //!                    └──────┬───────┘
-//!                           │ Native Messaging (stdin/stdout JSON)
+//!                           │ Native Messaging request/response (length-prefixed JSON)
 //!                    ┌──────┴───────┐
 //!                    │  Native Host │  ← Small binary that bridges to service
 //!                    │  (focuser-   │
 //!                    │   native)    │
 //!                    └──────┬───────┘
-//!                           │ IPC (TCP / Unix socket)
+//!                           │ authenticated Windows named pipe
 //!                    ┌──────┴───────┐
 //!                    │   FocusGuard    │
 //!                    │   Service    │
@@ -40,6 +40,7 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::HashMap;
 
 // ─── Messages from Service → Extension ──────────────────────────────
 
@@ -81,6 +82,10 @@ pub struct ExtensionRuleSet {
     /// own extensions page shut meanwhile, where it could be switched off.
     #[serde(default)]
     pub locked: bool,
+    /// Optional display categories for exact-domain rules, keyed by canonical
+    /// host. Used only to choose the block-page illustration and copy.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub domain_categories: HashMap<String, String>,
 }
 
 impl ExtensionRuleSet {
@@ -98,6 +103,7 @@ impl ExtensionRuleSet {
             allowed_url_paths: Vec::new(),
             allowance_domains: Vec::new(),
             locked: false,
+            domain_categories: HashMap::new(),
         }
     }
 
@@ -109,6 +115,48 @@ impl ExtensionRuleSet {
             || !self.blocked_url_paths.is_empty()
             || self.block_entire_internet
     }
+}
+
+/// Choose the block-page category implied by a list's name. This is display
+/// metadata only; the extension's blocking decisions never depend on it.
+pub fn category_for_list_name(list_name: &str) -> String {
+    let name = list_name.to_lowercase();
+    for (keyword, category) in [
+        ("porn", "adult"),
+        ("adult", "adult"),
+        ("nsfw", "adult"),
+        ("xxx", "adult"),
+        ("social", "social_media"),
+        ("instagram", "social_media"),
+        ("facebook", "social_media"),
+        ("twitter", "social_media"),
+        ("tiktok", "social_media"),
+        ("video", "video"),
+        ("stream", "video"),
+        ("youtube", "video"),
+        ("netflix", "video"),
+        ("entertain", "video"),
+        ("dating", "dating"),
+        ("tinder", "dating"),
+        ("bumble", "dating"),
+        ("gaming", "gaming"),
+        ("game", "gaming"),
+        ("steam", "gaming"),
+        ("news", "news"),
+        ("reddit", "news"),
+        ("forum", "news"),
+        ("shop", "shopping"),
+        ("amazon", "shopping"),
+        ("ebay", "shopping"),
+        ("gambling", "gambling"),
+        ("betting", "gambling"),
+        ("casino", "gambling"),
+    ] {
+        if name.contains(keyword) {
+            return category.to_string();
+        }
+    }
+    "default".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

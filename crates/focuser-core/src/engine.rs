@@ -181,6 +181,10 @@ impl BlockEngine {
                         rules
                             .blocked_wildcards
                             .extend(name_patterns(d).into_iter().flatten());
+                        rules.domain_categories.insert(
+                            focuser_common::host::canonical_host(d),
+                            focuser_common::extension::category_for_list_name(&list.name),
+                        );
                     }
                     WebsiteMatchType::Keyword(kw) => {
                         rules.blocked_keywords.push(kw.clone());
@@ -345,6 +349,9 @@ impl BlockEngine {
         rules.allowed_wildcards.hash(&mut hasher);
         rules.allowed_url_paths.hash(&mut hasher);
         rules.allowance_domains.hash(&mut hasher);
+        let mut categories: Vec<_> = rules.domain_categories.iter().collect();
+        categories.sort_by_key(|(left, _)| *left);
+        categories.hash(&mut hasher);
         serde_json::to_string(&rules.scopes)
             .unwrap_or_default()
             .hash(&mut hasher);

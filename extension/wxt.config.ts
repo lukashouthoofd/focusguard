@@ -34,9 +34,15 @@ export default defineConfig({
     default_locale: "en",
     description:
       "Blocks distracting sites so you stay focused. Enforces the block lists you set in the FocusGuard desktop app.",
-    // Only what is actually used. `webRequest` and `nativeMessaging` were
-    // declared before and never needed — both cost review scrutiny for nothing.
-    permissions: ["tabs", "webNavigation", "scripting", "storage", "alarms", "idle"],
+    permissions: [
+      "tabs",
+      "webNavigation",
+      "scripting",
+      "storage",
+      "alarms",
+      "idle",
+      "nativeMessaging",
+    ],
     host_permissions: ["<all_urls>"],
     icons: ICONS,
     action: { default_icon: ICONS },

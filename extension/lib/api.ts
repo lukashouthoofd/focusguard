@@ -6,10 +6,10 @@
  * a YouTube channel, `youtube.ts` asks YouTube which channel a video is from.
  * There is no FocusGuard server anywhere, by design.
  *
- * The old extension also tried Native Messaging first and fell back to HTTP
- * after three failures. The native host has had nothing to connect to since the
- * standalone service was removed, so that path only ever cost startup latency.
- * HTTP is the only transport now.
+ * Windows builds can read rules through Native Messaging and the authenticated
+ * service pipe, so the service keeps enforcing while the desktop UI is closed.
+ * Other extension features continue to use the desktop HTTP API until their
+ * typed service operations are available.
  */
 
 import type { RuleSet } from "./rules";
@@ -18,6 +18,86 @@ export const API_BASE = "http://127.0.0.1:17593";
 
 /** How often to re-read rules. The app recompiles them on every change. */
 export const POLL_INTERVAL_MS = 2_000;
+
+type NativePort = ReturnType<typeof browser.runtime.connectNative>;
+let nativePort: NativePort | null = null;
+let pendingNativeRules:
+  | { resolve: (rules: RuleSet | null) => void; timeout: ReturnType<typeof setTimeout> }
+  | null = null;
+let nativeRulesRequest: Promise<RuleSet | null> | null = null;
+
+function settleNativeRules(rules: RuleSet | null): void {
+  const pending = pendingNativeRules;
+  if (!pending) return;
+  pendingNativeRules = null;
+  clearTimeout(pending.timeout);
+  pending.resolve(rules);
+}
+
+function ensureNativePort(): NativePort {
+  if (nativePort) return nativePort;
+  const port = browser.runtime.connectNative("com.focuser.native");
+  nativePort = port;
+  port.onMessage.addListener((message: unknown) => {
+    if (nativePort !== port) return;
+    if (!message || typeof message !== "object") {
+      settleNativeRules(null);
+      return;
+    }
+    const response = message as { msg_type?: unknown; payload?: unknown };
+    if (response.msg_type === "RuleUpdate" && isRuleSet(response.payload)) {
+      settleNativeRules(response.payload);
+    } else {
+      settleNativeRules(null);
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    if (nativePort === port) {
+      nativePort = null;
+      settleNativeRules(null);
+    }
+  });
+  return port;
+}
+
+function isRuleSet(value: unknown): value is RuleSet {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<RuleSet>;
+  return (
+    Array.isArray(candidate.blocked_domains) &&
+    Array.isArray(candidate.blocked_keywords) &&
+    Array.isArray(candidate.blocked_wildcards) &&
+    Array.isArray(candidate.blocked_url_paths) &&
+    Array.isArray(candidate.allowed_domains)
+  );
+}
+
+function fetchNativeRules(): Promise<RuleSet | null> {
+  if (nativeRulesRequest) return nativeRulesRequest;
+  nativeRulesRequest = new Promise<RuleSet | null>((resolve) => {
+    try {
+      const port = ensureNativePort();
+      const pending = {
+        resolve,
+        timeout: setTimeout(() => {
+          if (pendingNativeRules?.resolve !== resolve) return;
+          settleNativeRules(null);
+          // Drop the host so a late reply cannot be mistaken for the next
+          // poll's response.
+          port.disconnect();
+        }, 5_000),
+      };
+      pendingNativeRules = pending;
+      port.postMessage({ msg_type: "RuleUpdate", payload: null });
+    } catch {
+      if (pendingNativeRules?.resolve === resolve) settleNativeRules(null);
+      else resolve(null);
+    }
+  }).finally(() => {
+    nativeRulesRequest = null;
+  });
+  return nativeRulesRequest;
+}
 
 /** Which browser we are, for the app's "extension connected" tracking. */
 export type BrowserName = "Chrome" | "Firefox" | "Edge" | "Brave" | "Opera" | "Other";
@@ -35,6 +115,9 @@ export function detectBrowser(): BrowserName {
 
 /** Result of a rules fetch. `null` means the app is not reachable. */
 export async function fetchRules(browser: BrowserName): Promise<RuleSet | null> {
+  const nativeRules = await fetchNativeRules();
+  if (nativeRules) return nativeRules;
+
   try {
     const response = await fetch(`${API_BASE}/api/rules`, {
       headers: { "X-FocusGuard-Browser": browser },
