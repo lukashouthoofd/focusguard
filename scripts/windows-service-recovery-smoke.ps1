@@ -4,6 +4,9 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows' -or
     $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
     throw 'This SCM runtime test may run only on a GitHub-hosted Windows runner.'
 }
+if ($PSVersionTable.PSVersion -lt [version]'7.4') {
+    throw 'This SCM runtime test requires PowerShell 7.4 or newer for Native Messaging stdin redirection.'
+}
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -14,6 +17,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $serviceName = 'FocusGuardService'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $serviceExe = Join-Path $repoRoot 'target\debug\focusguard-service.exe'
+$nativeHostExe = Join-Path $repoRoot 'target\debug\focuser-native.exe'
 $probeExe = Join-Path $repoRoot 'target\debug\examples\scm_policy_probe.exe'
 $runnerTemp = (Resolve-Path $env:RUNNER_TEMP).Path.TrimEnd('\')
 $testRoot = Join-Path $runnerTemp ("focusguard-scm-recovery-" + [guid]::NewGuid().ToString('N'))
@@ -139,9 +143,68 @@ function Invoke-Probe([string] $Stage) {
     }
 }
 
+function Invoke-NativeHeartbeat {
+    $requestPath = Join-Path $testRoot 'native-request.bin'
+    $responsePath = Join-Path $testRoot 'native-response.bin'
+    $errorPath = Join-Path $testRoot 'native-stderr.log'
+    $message = @{
+        msg_type = 'Event'
+        payload = @{
+            kind = 'heartbeat'
+            browser = 'Chrome'
+            profile_id = '00000000-0000-4000-8000-000000000001'
+            incognito_allowed = $true
+        }
+        request_id = 774
+    } | ConvertTo-Json -Compress -Depth 5
+    $jsonBytes = [Text.UTF8Encoding]::new($false).GetBytes($message)
+    $lengthBytes = [BitConverter]::GetBytes([uint32] $jsonBytes.Length)
+    $frame = New-Object byte[] ($lengthBytes.Length + $jsonBytes.Length)
+    [Array]::Copy($lengthBytes, 0, $frame, 0, $lengthBytes.Length)
+    [Array]::Copy($jsonBytes, 0, $frame, $lengthBytes.Length, $jsonBytes.Length)
+    [IO.File]::WriteAllBytes($requestPath, $frame)
+
+    $process = $null
+    try {
+        $process = Start-Process -FilePath $nativeHostExe -PassThru -WindowStyle Hidden `
+        -RedirectStandardInput $requestPath -RedirectStandardOutput $responsePath `
+        -RedirectStandardError $errorPath
+        if (-not $process.WaitForExit(15000)) {
+            throw 'Native Messaging host exceeded its 15-second process timeout.'
+        }
+    }
+    finally {
+        if ($null -ne $process -and -not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            if (-not $process.WaitForExit(5000)) {
+                throw 'Native Messaging host did not exit after forced cleanup.'
+            }
+        }
+    }
+    if ($process.ExitCode -ne 0) {
+        $stderr = if (Test-Path $errorPath) { Get-Content -Raw $errorPath } else { '' }
+        throw "Native Messaging host exited $($process.ExitCode): $stderr"
+    }
+
+    $responseFrame = [IO.File]::ReadAllBytes($responsePath)
+    if ($responseFrame.Length -lt 4) {
+        throw 'Native Messaging host returned a truncated frame.'
+    }
+    $responseLength = [BitConverter]::ToUInt32($responseFrame, 0)
+    if ($responseLength -eq 0 -or $responseLength -ne ($responseFrame.Length - 4)) {
+        throw 'Native Messaging host returned an invalid frame length.'
+    }
+    $responseJson = [Text.UTF8Encoding]::new($false).GetString($responseFrame, 4, [int] $responseLength)
+    $response = $responseJson | ConvertFrom-Json
+    if ($response.msg_type -ne 'Event' -or $response.request_id -ne 774 -or $response.payload.ok -ne $true) {
+        throw "Native Messaging event was not acknowledged with its request ID: $responseJson"
+    }
+    Write-Host 'Native Messaging host forwarded a heartbeat through the authenticated service pipe.'
+}
+
 try {
-    if (-not (Test-Path $serviceExe) -or -not (Test-Path $probeExe)) {
-        throw 'Build focusguard-service.exe and scm_policy_probe.exe before running this script.'
+    if (-not (Test-Path $serviceExe) -or -not (Test-Path $nativeHostExe) -or -not (Test-Path $probeExe)) {
+        throw 'Build focusguard-service.exe, focuser-native.exe, and scm_policy_probe.exe before running this script.'
     }
     if ($null -ne (Get-ServiceInfo)) {
         throw "A service named $serviceName already exists; refusing to modify it."
@@ -177,6 +240,8 @@ try {
 
     Invoke-Probe 'seed'
     Wait-HostsRule
+    Invoke-NativeHeartbeat
+    Invoke-Probe 'verify'
     $beforeCrash = Get-ServiceInfo
     if ($null -eq $beforeCrash -or $beforeCrash.State -ne 'Running') {
         throw 'Service stopped before the forced-crash step.'
@@ -192,8 +257,9 @@ try {
     Write-Host "SCM restarted the service as PID $($recovered.ProcessId) after forced termination."
 
     Wait-HostsRule
+    Invoke-NativeHeartbeat
     Invoke-Probe 'verify'
-    Write-Host 'Recovery test passed: authenticated IPC sees the durable rule and SCM restart restored it to the temporary hosts file.'
+    Write-Host 'Recovery test passed: the Native Messaging event reached the service, the rule survived SCM restart, and reconciliation restored the temporary hosts fixture.'
 }
 finally {
     $cleanupFailures = @()

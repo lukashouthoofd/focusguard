@@ -10,6 +10,7 @@ on:
       - 'crates/focuser-client/**'
       - 'crates/focuser-common/**'
       - 'crates/focuser-core/**'
+      - 'crates/focuser-native/**'
       - 'crates/focuser-service/**'
       - 'scripts/windows-service-recovery-smoke.ps1'
 
@@ -32,8 +33,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build isolated service and IPC probe
-        run: cargo build --locked -p focuser-service --bin focusguard-service --example scm_policy_probe
+      - name: Build isolated service, Native Messaging host, and IPC probe
+        run: |
+          cargo build --locked -p focuser-service --bin focusguard-service --example scm_policy_probe
+          cargo build --locked -p focuser-native
 
       - name: Exercise LocalSystem SCM restart and policy reconciliation
         shell: pwsh

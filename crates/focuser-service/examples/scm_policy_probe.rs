@@ -3,14 +3,13 @@
 
 use std::env;
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use focuser_app::{Command, CommandResult};
 use focuser_client::execute;
 use focuser_common::types::WebsiteMatchType;
 
 const LIST_NAME: &str = "FocusGuard SCM recovery CI";
 const TEST_DOMAIN: &str = "focuser-scm-recovery.invalid";
-const PROFILE_ID: &str = "00000000-0000-4000-8000-000000000001";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,8 +47,8 @@ async fn seed() -> anyhow::Result<()> {
         rule: WebsiteMatchType::Domain(TEST_DOMAIN.into()),
     })
     .await?;
-    check_extension_presence().await?;
-    verify().await.context("verify rule after IPC creation")
+    println!("Authenticated service IPC created the exact-domain rule for {TEST_DOMAIN}.");
+    Ok(())
 }
 
 async fn verify() -> anyhow::Result<()> {
@@ -75,19 +74,15 @@ async fn verify() -> anyhow::Result<()> {
 }
 
 async fn check_extension_presence() -> anyhow::Result<()> {
-    execute(Command::ExtensionHeartbeat {
-        browser: "Chrome".into(),
-        profile_id: PROFILE_ID.into(),
-        incognito_allowed: Some(true),
-    })
-    .await?;
     let result = execute(Command::GetBlockingHealth).await?;
     let CommandResult::BlockingHealth(health) = result else {
-        bail!("service returned no blocking health after extension heartbeat");
+        bail!("service returned no blocking health after Native Messaging event");
     };
     if !health.extension_connected {
         bail!("service did not scope extension presence to the authenticated session");
     }
-    println!("Authenticated service IPC records extension presence for this Windows session.");
+    println!(
+        "Service health reports Native Messaging extension presence for this Windows session."
+    );
     Ok(())
 }
