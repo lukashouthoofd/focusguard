@@ -100,7 +100,10 @@ fn service_registered_windows() -> io::Result<bool> {
 
     use windows_sys::Win32::{
         Foundation::ERROR_SERVICE_DOES_NOT_EXIST,
-        System::Services::{CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT},
+        System::Services::{
+            CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT,
+            SERVICE_QUERY_STATUS,
+        },
     };
 
     struct ServiceHandle(*mut core::ffi::c_void);
@@ -124,7 +127,7 @@ fn service_registered_windows() -> io::Result<bool> {
         .encode_wide()
         .chain(Some(0))
         .collect();
-    let service = unsafe { OpenServiceW(manager.0, service_name.as_ptr(), 0) };
+    let service = unsafe { OpenServiceW(manager.0, service_name.as_ptr(), SERVICE_QUERY_STATUS) };
     if !service.is_null() {
         let service = ServiceHandle(service);
         drop(service);
@@ -137,7 +140,7 @@ fn service_registered_windows() -> io::Result<bool> {
     } else {
         Err(io::Error::new(
             error.kind(),
-            format!("OpenServiceW(FocusGuardService, 0): {error}"),
+            format!("OpenServiceW(FocusGuardService, SERVICE_QUERY_STATUS): {error}"),
         ))
     }
 }
