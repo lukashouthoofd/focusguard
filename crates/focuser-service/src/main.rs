@@ -11,7 +11,11 @@ mod windows_service_host {
     };
 
     use anyhow::{Context, bail};
-    use tokio::{runtime::Builder, sync::oneshot};
+    use tokio::{
+        net::windows::named_pipe::NamedPipeServer,
+        runtime::{Builder, Runtime},
+        sync::oneshot,
+    };
     use windows_service::{
         define_windows_service,
         service::{
@@ -58,14 +62,19 @@ mod windows_service_host {
     }
 
     fn run_console(owner_sid: String) -> anyhow::Result<()> {
+        let service_sid = pipe::current_user_sid_string()?;
+        let context = Arc::new(pipe::new_context()?);
         let runtime = Builder::new_multi_thread().enable_all().build()?;
+        let listener = runtime
+            .block_on(pipe::prepare(&owner_sid, &service_sid))
+            .context("prepare secured pipe listener")?;
         runtime.block_on(async move {
             eprintln!(
                 "FocusGuard service smoke host listening on {}; enforcement is not active.",
                 pipe::PIPE_NAME
             );
             tokio::select! {
-                result = pipe::serve(owner_sid) => result.context("named-pipe server stopped"),
+                result = pipe::serve(owner_sid, service_sid, listener, context) => result.context("named-pipe server stopped"),
                 result = tokio::signal::ctrl_c() => result.context("wait for Ctrl+C"),
             }
         })
@@ -78,8 +87,6 @@ mod windows_service_host {
     }
 
     fn run_service(arguments: Vec<OsString>) -> anyhow::Result<()> {
-        let owner_sid = parse_owner_sid(&arguments)?
-            .context("service configuration must include --owner-sid <SID>")?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
         let handler_tx = Arc::clone(&shutdown_tx);
@@ -100,7 +107,18 @@ mod windows_service_host {
             ServiceControlAccept::empty(),
             ServiceExitCode::NO_ERROR,
         ))?;
-        let runtime = Builder::new_multi_thread().enable_all().build()?;
+        let (owner_sid, service_sid, runtime, listener, context) = match prepare_service(arguments)
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = status_handle.set_service_status(status(
+                    ServiceState::Stopped,
+                    ServiceControlAccept::empty(),
+                    ServiceExitCode::Win32(1),
+                ));
+                return Err(error);
+            }
+        };
         status_handle.set_service_status(status(
             ServiceState::Running,
             ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
@@ -109,7 +127,7 @@ mod windows_service_host {
 
         let result = runtime.block_on(async move {
             tokio::select! {
-                result = pipe::serve(owner_sid) => result.context("named-pipe server stopped"),
+                result = pipe::serve(owner_sid, service_sid, listener, context) => result.context("named-pipe server stopped"),
                 _ = shutdown_rx => Ok(()),
             }
         });
@@ -129,6 +147,34 @@ mod windows_service_host {
             exit_code,
         ))?;
         result
+    }
+
+    fn prepare_service(
+        arguments: Vec<OsString>,
+    ) -> anyhow::Result<(
+        String,
+        String,
+        Runtime,
+        NamedPipeServer,
+        Arc<focuser_app::AppContext>,
+    )> {
+        let owner_sid = parse_owner_sid(&arguments)?
+            .context("service configuration must include --owner-sid <SID>")?;
+        let service_sid = pipe::service_sid_string(SERVICE_NAME)
+            .context("resolve FocusGuard service SID; install with a service SID enabled")?;
+        if !pipe::current_process_has_enabled_sid(&service_sid)? {
+            bail!(
+                "service SID is not enabled in the SCM process token; enable SERVICE_SID_TYPE_UNRESTRICTED or SERVICE_SID_TYPE_RESTRICTED"
+            );
+        }
+        let context = Arc::new(pipe::new_context().map_err(|error| {
+            anyhow::anyhow!("initialize command context before reporting Running: {error}")
+        })?);
+        let runtime = Builder::new_multi_thread().enable_all().build()?;
+        let listener = runtime
+            .block_on(pipe::prepare(&owner_sid, &service_sid))
+            .context("prepare secured pipe listener and verify service SID access")?;
+        Ok((owner_sid, service_sid, runtime, listener, context))
     }
 
     fn status(

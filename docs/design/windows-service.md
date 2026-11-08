@@ -10,7 +10,7 @@ The current UI process opens the SQLite database in `crates/focuser-ui/src/main.
 
 ## Smoke host
 
-On Windows, run `cargo run -p focuser-service -- --console` to start the local smoke host as the current user; Ctrl+C stops it. Its named pipe accepts only the `AppVersion` probe. The executable also has an SCM dispatcher, but this repository has no service installer action or service account configuration yet. Do not treat console mode as elevated enforcement. `cargo test -p focuser-service --locked` exercises the local pipe ACL, probe, denied mutation, mismatched caller SID, invalid frame, and first-instance behavior on Windows.
+On Windows, run `cargo run -p focuser-service -- --console` to start the local smoke host as the current user; Ctrl+C stops it. Its named pipe accepts only the `AppVersion` probe. The executable also has an SCM dispatcher, but this repository has no service installer action or service SID configuration yet. Console mode uses the current process SID and provides no privilege separation. `cargo test -p focuser-service --locked` exercises the local pipe ACL, probe, denied mutation, mismatched caller SID, invalid frame, first-instance behavior, and startup instance-access check on Windows.
 
 ## Ownership model
 
@@ -23,7 +23,7 @@ The database move requires a versioned migration from the current per-user app d
 
 ## Local IPC boundary
 
-- Use a local named pipe with remote clients rejected. The prototype pipe DACL gives the service process, LocalSystem, and administrators full pipe control, and gives the configured owner SID the individual data/attribute rights needed by clients without `FILE_CREATE_PIPE_INSTANCE`. It verifies the impersonated caller's user SID on each connection rather than trusting a pipe name. Administrator access is intentionally allowed.
+- Use a local named pipe with remote clients rejected. The SCM pipe DACL gives the unique `NT SERVICE\FocusGuardService` SID, LocalSystem, and administrators full pipe control; the configured owner SID gets the individual data/attribute rights needed by clients without `FILE_CREATE_PIPE_INSTANCE`. It verifies the impersonated caller's user SID on each connection rather than trusting a pipe name. Administrator and LocalSystem access are intentionally trusted; LocalSystem processes can also create pipe instances.
 - Supply an explicit pipe security descriptor. Microsoft documents that a default named-pipe DACL grants read access to Everyone and the anonymous account. Where the product must isolate terminal sessions, include the active logon SID in the authorization decision; a user SID alone spans that user's sessions. Reject remote clients at pipe creation and claim the first pipe instance to prevent remote access and pipe-name squatting.
 - Use byte-mode pipes for the protocol's length-prefixed byte stream. The prototype uses overlapped Tokio handles, a five-second frame deadline, four pipe instances, and at most three request workers. A separate Windows client open uses individual access bits because generic write maps to `FILE_CREATE_PIPE_INSTANCE`.
 - The prototype checks the user SID, but not the logon SID. Multiple terminal sessions belonging to the same Windows account are therefore not isolated yet. With an identification-level client token, the SCM service account must have `SeImpersonatePrivilege` when it differs from the caller; the local console tests use the same identity and do not verify that service-account path. Verify this and fail service startup clearly if the configured account cannot authenticate clients.
@@ -34,7 +34,7 @@ The database move requires a versioned migration from the current per-user app d
 
 ## Privileges and enforcement
 
-The service needs enough authority to update the shared Windows hosts file and inspect or stop blocked processes in its supported sessions. The service account is an open design decision: prototype the required operations under LocalService with only explicit service-specific access, and compare with LocalSystem plus a restricted service SID. Select the least-privileged account that passes the complete VM test matrix; do not assume account choice from development builds.
+The service needs enough authority to update the shared Windows hosts file and inspect or stop blocked processes in its supported sessions. The SCM host resolves `NT SERVICE\FocusGuardService`, explicitly checks that the SID is enabled in its process token, initializes the command context, and creates/probes a second pipe instance before reporting `Running`. The installer must enable the unique service SID with `SERVICE_SID_TYPE_UNRESTRICTED` or `SERVICE_SID_TYPE_RESTRICTED`. Never grant full pipe rights to the shared LocalService account SID; evaluate candidate service accounts only after the unique service SID and privilege path pass disposable-VM tests.
 
 Begin with service-owned hosts-file domain fallback and per-session process checks. Hosts edits are marked, deterministic, and idempotent; cleanup removes only the FocusGuard section. URL paths, search patterns, and page rules remain extension features. Hosts filtering does not defeat DoH, VPNs, proxies, alternate browsers, or local administrators.
 
@@ -50,7 +50,7 @@ Do not add a kernel driver to the first service milestone. Evaluate user-mode Wi
 ## Implementation sequence
 
 1. The shared command layer and lock-preserving mutation tests already live in `focuser-app`; its `protocol` module supplies typed, versioned, bounded wire frames. Async framing and transport-level peer authorization now exist; expand identity/session and lifecycle coverage.
-2. Add a Windows-only service executable and named-pipe server; this smoke-host step is implemented and tested without installing it on the development host. It is not yet an enforcement service.
+2. Add a Windows-only service executable and named-pipe server; this smoke-host step is implemented and tested without installing it on the development host. SCM startup resolves the unique service SID and creates/probes pipe instances before reporting `Running`. It is not yet an enforcement service.
 3. Move the loopback API and enforcement workers into the service; make the UI a client and remove Windows UI-owned host/process enforcement.
 4. Add service installation, ACLs, recovery actions, data migration, and admin cleanup to the installer only after the service and pipe tests pass.
 5. Run the full installer and behavior matrix in a disposable Windows VM. Treat each supported Windows version, standard-user boundary, and administrator boundary as separate evidence.

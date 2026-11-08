@@ -28,8 +28,9 @@ use windows_sys::{
             SDDL_REVISION_1,
         },
         Security::{
-            GetTokenInformation, RevertToSelf, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
-            TokenUser,
+            CheckTokenMembership, DuplicateTokenEx, GetTokenInformation, LookupAccountNameW,
+            RevertToSelf, SECURITY_ATTRIBUTES, SecurityImpersonation, TOKEN_DUPLICATE, TOKEN_QUERY,
+            TOKEN_USER, TokenImpersonation, TokenUser,
         },
         Storage::FileSystem::{
             FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_READ_ATTRIBUTES,
@@ -61,13 +62,36 @@ const PIPE_CLIENT_RIGHTS: u32 = FILE_READ_DATA
     | SYNCHRONIZE;
 const PIPE_FULL_CONTROL: u32 = 0x001F01FF;
 
-pub async fn serve(owner_sid: String) -> io::Result<()> {
+pub async fn prepare(owner_sid: &str, service_sid: &str) -> io::Result<NamedPipeServer> {
+    prepare_named(PIPE_NAME, owner_sid, service_sid).await
+}
+
+async fn prepare_named(
+    name: &str,
+    owner_sid: &str,
+    service_sid: &str,
+) -> io::Result<NamedPipeServer> {
+    validate_sid(owner_sid)?;
+    validate_sid(service_sid)?;
+    let listener = create_pipe(name, owner_sid, service_sid, true)?;
+    // Create a second instance during startup. Besides checking that the
+    // service-specific SID is present in the SCM token, this catches ACL or
+    // account configuration failures before the SCM reports Running.
+    let instance_probe = create_pipe(name, owner_sid, service_sid, false)?;
+    drop(instance_probe);
+    Ok(listener)
+}
+
+pub async fn serve(
+    owner_sid: String,
+    service_sid: String,
+    mut listener: NamedPipeServer,
+    context: Arc<AppContext>,
+) -> io::Result<()> {
     validate_sid(&owner_sid)?;
-    let context = Arc::new(new_context()?);
+    validate_sid(&service_sid)?;
     let slots = Arc::new(Semaphore::new(MAX_CLIENTS));
     let mut tasks = JoinSet::new();
-    let mut first = true;
-    let mut listener = create_pipe(PIPE_NAME, &owner_sid, first)?;
 
     loop {
         listener.connect().await?;
@@ -77,8 +101,7 @@ pub async fn serve(owner_sid: String) -> io::Result<()> {
             .map_err(|_| io::Error::other("pipe server is shutting down"))?;
 
         // Keep an instance listening before the connected client is dispatched.
-        first = false;
-        let next_listener = create_pipe(PIPE_NAME, &owner_sid, first)?;
+        let next_listener = create_pipe(PIPE_NAME, &owner_sid, &service_sid, false)?;
         let connected = listener;
         listener = next_listener;
         let client_context = Arc::clone(&context);
@@ -99,7 +122,7 @@ pub async fn serve(owner_sid: String) -> io::Result<()> {
     }
 }
 
-fn new_context() -> io::Result<AppContext> {
+pub fn new_context() -> io::Result<AppContext> {
     let database = Database::open_in_memory().map_err(other_io)?;
     let engine = BlockEngine::new(database).map_err(other_io)?;
     Ok(AppContext::new_headless(engine))
@@ -145,9 +168,13 @@ async fn handle_connection(
     pipe.flush().await
 }
 
-fn create_pipe(name: &str, owner_sid: &str, first: bool) -> io::Result<NamedPipeServer> {
-    let service_sid = current_user_sid()?;
-    let (descriptor, attributes) = security_attributes(owner_sid, &service_sid)?;
+fn create_pipe(
+    name: &str,
+    owner_sid: &str,
+    service_sid: &str,
+    first: bool,
+) -> io::Result<NamedPipeServer> {
+    let (descriptor, attributes) = security_attributes(owner_sid, service_sid)?;
     let name = wide(name);
     let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
     if first {
@@ -326,6 +353,98 @@ pub fn current_user_sid_string() -> io::Result<String> {
     current_user_sid()
 }
 
+pub fn service_sid_string(service_name: &str) -> io::Result<String> {
+    let account = wide(format!("NT SERVICE\\{service_name}"));
+    let mut sid_size = 0;
+    let mut domain_size = 0;
+    let mut sid_name_use = 0;
+    unsafe {
+        LookupAccountNameW(
+            null_mut(),
+            account.as_ptr(),
+            null_mut(),
+            &mut sid_size,
+            null_mut(),
+            &mut domain_size,
+            &mut sid_name_use,
+        )
+    };
+    if sid_size == 0 || domain_size == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut sid_buffer = vec![0usize; (sid_size as usize).div_ceil(size_of::<usize>())];
+    let mut domain_buffer = vec![0u16; domain_size as usize];
+    if unsafe {
+        LookupAccountNameW(
+            null_mut(),
+            account.as_ptr(),
+            sid_buffer.as_mut_ptr().cast(),
+            &mut sid_size,
+            domain_buffer.as_mut_ptr(),
+            &mut domain_size,
+            &mut sid_name_use,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    sid_to_string(sid_buffer.as_mut_ptr().cast())
+}
+
+pub fn current_process_has_enabled_sid(sid: &str) -> io::Result<bool> {
+    let sid = wide(sid);
+    let mut sid_pointer = null_mut();
+    if unsafe {
+        windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW(
+            sid.as_ptr(),
+            &mut sid_pointer,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut token = null_mut();
+    if unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            &mut token,
+        )
+    } == 0
+    {
+        let error = io::Error::last_os_error();
+        unsafe { LocalFree(sid_pointer) };
+        return Err(error);
+    }
+    let token = OwnedHandle(token);
+    let mut impersonation_token = null_mut();
+    if unsafe {
+        DuplicateTokenEx(
+            token.0,
+            TOKEN_QUERY,
+            null_mut(),
+            SecurityImpersonation,
+            TokenImpersonation,
+            &mut impersonation_token,
+        )
+    } == 0
+    {
+        let error = io::Error::last_os_error();
+        unsafe { LocalFree(sid_pointer) };
+        return Err(error);
+    }
+    let impersonation_token = OwnedHandle(impersonation_token);
+    let mut is_member = 0;
+    let check = unsafe { CheckTokenMembership(impersonation_token.0, sid_pointer, &mut is_member) };
+    let check_error = (check == 0).then(io::Error::last_os_error);
+    unsafe { LocalFree(sid_pointer) };
+    if let Some(error) = check_error {
+        return Err(error);
+    }
+    Ok(is_member != 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,7 +495,8 @@ mod tests {
     async fn secured_pipe_round_trips_only_the_smoke_probe() {
         let name = test_pipe_name();
         let owner_sid = current_user_sid().unwrap();
-        let server = create_pipe(&name, &owner_sid, true).unwrap();
+        let service_sid = current_user_sid().unwrap();
+        let server = create_pipe(&name, &owner_sid, &service_sid, true).unwrap();
         let context = new_context().unwrap();
         let server_task = tokio::spawn(async move {
             let server = server;
@@ -399,7 +519,8 @@ mod tests {
     async fn secured_pipe_rejects_mutations_and_bad_frames() {
         let name = test_pipe_name();
         let owner_sid = current_user_sid().unwrap();
-        let server = create_pipe(&name, &owner_sid, true).unwrap();
+        let service_sid = current_user_sid().unwrap();
+        let server = create_pipe(&name, &owner_sid, &service_sid, true).unwrap();
         let context = new_context().unwrap();
         let server_task = tokio::spawn(async move {
             let server = server;
@@ -420,7 +541,8 @@ mod tests {
 
         let name = test_pipe_name();
         let owner_sid = current_user_sid().unwrap();
-        let server = create_pipe(&name, &owner_sid, true).unwrap();
+        let service_sid = current_user_sid().unwrap();
+        let server = create_pipe(&name, &owner_sid, &service_sid, true).unwrap();
         let context = new_context().unwrap();
         let server_task = tokio::spawn(async move {
             let server = server;
@@ -448,7 +570,8 @@ mod tests {
             return;
         }
         let owner_sid = "S-1-5-18".to_owned();
-        let server = create_pipe(&name, &owner_sid, true).unwrap();
+        let service_sid = current_user_sid().unwrap();
+        let server = create_pipe(&name, &owner_sid, &service_sid, true).unwrap();
         let context = new_context().unwrap();
         let server_task = tokio::spawn(async move {
             let server = server;
@@ -471,9 +594,22 @@ mod tests {
     async fn first_pipe_instance_prevents_name_squatting() {
         let name = test_pipe_name();
         let owner_sid = current_user_sid().unwrap();
-        let _server = create_pipe(&name, &owner_sid, true).unwrap();
-        let error = create_pipe(&name, &owner_sid, true).unwrap_err();
+        let service_sid = current_user_sid().unwrap();
+        let _server = create_pipe(&name, &owner_sid, &service_sid, true).unwrap();
+        let service_sid = current_user_sid().unwrap();
+        let error = create_pipe(&name, &owner_sid, &service_sid, true).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn startup_prepares_listener_and_verifies_instance_access() {
+        let name = test_pipe_name();
+        let owner_sid = current_user_sid().unwrap();
+        let service_sid = current_user_sid().unwrap();
+        let listener = prepare_named(&name, &owner_sid, &service_sid)
+            .await
+            .unwrap();
+        assert_eq!(listener.info().unwrap().max_instances, MAX_PIPE_INSTANCES);
     }
 
     #[test]
@@ -484,5 +620,10 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         assert_eq!(PIPE_CLIENT_RIGHTS & FILE_CREATE_PIPE_INSTANCE, 0);
+    }
+
+    #[test]
+    fn membership_check_uses_a_queryable_impersonation_token() {
+        assert!(current_process_has_enabled_sid("S-1-1-0").unwrap());
     }
 }
