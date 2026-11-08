@@ -25,7 +25,7 @@ pub enum PomodoroEvent {
 /// wires in its platform blocker, and tests use [`NoopSync`] — which is what
 /// makes command behaviour testable without touching a real hosts file.
 pub trait SystemSync: Send + Sync {
-    fn sync_hosts(&self, domains: &[String]);
+    fn sync_hosts(&self, domains: &[String]) -> Result<(), String>;
 
     /// Browsers currently running, by `BrowserType` debug name.
     ///
@@ -68,7 +68,9 @@ pub trait SystemSync: Send + Sync {
 pub struct NoopSync;
 
 impl SystemSync for NoopSync {
-    fn sync_hosts(&self, _domains: &[String]) {}
+    fn sync_hosts(&self, _domains: &[String]) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Everything a command needs in order to run.
@@ -77,6 +79,7 @@ pub struct AppContext {
     pub allowance_tracker: AllowanceTracker,
     pomodoro_events: Mutex<Vec<PomodoroEvent>>,
     system: Arc<dyn SystemSync>,
+    last_hosts_sync_error: Mutex<Option<String>>,
 }
 
 impl AppContext {
@@ -87,6 +90,7 @@ impl AppContext {
             allowance_tracker: AllowanceTracker::new(),
             pomodoro_events: Mutex::new(Vec::new()),
             system,
+            last_hosts_sync_error: Mutex::new(None),
         }
     }
 
@@ -98,8 +102,8 @@ impl AppContext {
     /// Re-derive the blocked-domain set from the engine and push it to the OS.
     ///
     /// Call after any mutation that can change which domains are blocked.
-    pub fn sync_hosts(&self, engine: &BlockEngine) {
-        self.system.sync_hosts(&engine.collect_blocked_domains());
+    pub fn sync_hosts(&self, engine: &BlockEngine) -> Result<(), String> {
+        self.sync_hosts_with(&engine.collect_blocked_domains())
     }
 
     /// Push an explicit domain set, bypassing the engine.
@@ -112,8 +116,19 @@ impl AppContext {
         self.system.hosts_writable()
     }
 
-    pub fn sync_hosts_with(&self, domains: &[String]) {
-        self.system.sync_hosts(domains);
+    pub fn sync_hosts_with(&self, domains: &[String]) -> Result<(), String> {
+        let result = self.system.sync_hosts(domains);
+        if let Ok(mut last_error) = self.last_hosts_sync_error.lock() {
+            *last_error = result.as_ref().err().cloned();
+        }
+        result
+    }
+
+    pub fn hosts_sync_error(&self) -> Option<String> {
+        self.last_hosts_sync_error
+            .lock()
+            .ok()
+            .and_then(|error| error.clone())
     }
 
     pub fn running_browsers(&self) -> Vec<String> {
@@ -162,7 +177,7 @@ impl AppContext {
 mod tests {
     use super::*;
     use focuser_core::Database;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn ctx() -> AppContext {
         let db = Database::open_in_memory().unwrap();
@@ -189,8 +204,9 @@ mod tests {
     struct CountingSync(AtomicUsize);
 
     impl SystemSync for CountingSync {
-        fn sync_hosts(&self, _domains: &[String]) {
+        fn sync_hosts(&self, _domains: &[String]) -> Result<(), String> {
             self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
@@ -203,9 +219,42 @@ mod tests {
 
         {
             let eng = ctx.engine.lock().unwrap();
-            ctx.sync_hosts(&eng);
+            ctx.sync_hosts(&eng).unwrap();
         }
 
         assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+    }
+
+    struct ToggleFailure(AtomicBool);
+
+    impl SystemSync for ToggleFailure {
+        fn sync_hosts(&self, _domains: &[String]) -> Result<(), String> {
+            if self.0.load(Ordering::SeqCst) {
+                Err("fixture write failure".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn hosts_sync_error_is_visible_and_cleared_after_recovery() {
+        let system = Arc::new(ToggleFailure(AtomicBool::new(true)));
+        let database = Database::open_in_memory().unwrap();
+        let engine = BlockEngine::new(database).unwrap();
+        let context = AppContext::new(engine, system.clone());
+
+        assert_eq!(
+            context.sync_hosts_with(&[]).unwrap_err(),
+            "fixture write failure"
+        );
+        assert_eq!(
+            context.hosts_sync_error().as_deref(),
+            Some("fixture write failure")
+        );
+
+        system.0.store(false, Ordering::SeqCst);
+        context.sync_hosts_with(&[]).unwrap();
+        assert_eq!(context.hosts_sync_error(), None);
     }
 }

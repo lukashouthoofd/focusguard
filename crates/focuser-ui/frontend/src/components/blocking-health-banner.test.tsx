@@ -13,7 +13,13 @@ function onSystem(agent: string) {
 
 function health(patch: Partial<BlockingHealth>) {
   useBlockingHealth.mockReturnValue({
-    data: { active_lists: 1, extension_connected: false, hosts_writable: false, ...patch },
+    data: {
+      active_lists: 1,
+      extension_connected: false,
+      hosts_writable: false,
+      hosts_sync_error: null,
+      ...patch,
+    },
   });
 }
 
@@ -73,6 +79,12 @@ describe("BlockingHealthBanner", () => {
     health({ hosts_writable: true });
     render(<BlockingHealthBanner />);
     expect(banner()).toBeNull();
+  });
+
+  it("warns with the last sync error even when a write permission probe succeeds", () => {
+    health({ hosts_writable: true, hosts_sync_error: "invalid FocusGuard section" });
+    render(<BlockingHealthBanner />);
+    expect(banner()).toHaveTextContent("invalid FocusGuard section");
   });
 
   it("stays quiet when nothing is meant to be blocked", () => {

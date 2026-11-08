@@ -56,6 +56,9 @@ pub enum CommandError {
     #[error("operation is not supported on this platform")]
     Unsupported,
 
+    #[error("policy was saved, but website enforcement failed: {0}")]
+    Enforcement(String),
+
     #[error(transparent)]
     Core(focuser_common::FocuserError),
 
@@ -100,6 +103,7 @@ impl CommandError {
             Self::WrongUnlockResponse => "wrong_unlock_response",
             Self::Validation(_) => "validation",
             Self::Unsupported => "unsupported",
+            Self::Enforcement(_) => "enforcement_failed",
             Self::Core(_) => "core",
             Self::Internal(_) => "internal",
         }
@@ -114,6 +118,7 @@ impl CommandError {
             Self::Validation(_) => 2,
             Self::Unsupported => 6,
             Self::Core(_) | Self::Internal(_) => 1,
+            Self::Enforcement(_) => 7,
         }
     }
 }
@@ -163,6 +168,14 @@ mod tests {
     fn validation_exits_two_and_protected_exits_five() {
         assert_eq!(CommandError::Validation("x".into()).exit_code(), 2);
         assert_eq!(CommandError::Protected.exit_code(), 5);
+    }
+
+    #[test]
+    fn enforcement_failure_has_a_stable_code_and_distinct_exit() {
+        let error = CommandError::Enforcement("fixture write failure".into());
+        assert_eq!(error.code(), "enforcement_failed");
+        assert_eq!(error.exit_code(), 7);
+        assert!(error.to_string().contains("policy was saved"));
     }
 
     #[test]

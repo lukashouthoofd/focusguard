@@ -141,8 +141,13 @@ export type BlockingHealth = {
 	active_lists: number,
 	/**  An extension has checked in recently, so it is enforcing rules. */
 	extension_connected: boolean,
-	/**  The hosts file can be written — i.e. we have the privileges for it. */
+	/**
+	 *  The hosts file can be opened for writing — a permission probe, not proof
+	 *  that the most recent policy was applied.
+	 */
 	hosts_writable: boolean,
+	/**  Error returned by the most recent hosts-policy synchronization, if any. */
+	hosts_sync_error: string | null,
 	/**
 	 *  A keyword, wildcard or URL-path rule is active. Only the extension can
 	 *  enforce those; a hosts file has no way to express them.

@@ -743,7 +743,12 @@ fn api_add_site(body: &str, state: &AppState) -> (&'static str, String) {
         );
     }
     let _ = eng.refresh();
-    state.sync_hosts(&eng);
+    if let Err(error) = state.sync_hosts(&eng) {
+        return (
+            "500 Internal Server Error",
+            serde_json::json!({"code": "enforcement_failed", "error": error}).to_string(),
+        );
+    }
 
     (
         "200 OK",
@@ -820,7 +825,12 @@ fn api_remove_site(body: &str, state: &AppState) -> (&'static str, String) {
         );
     }
     let _ = eng.refresh();
-    state.sync_hosts(&eng);
+    if let Err(error) = state.sync_hosts(&eng) {
+        return (
+            "500 Internal Server Error",
+            serde_json::json!({"code": "enforcement_failed", "error": error}).to_string(),
+        );
+    }
 
     // `removed` matters: removing nothing used to answer "ok" exactly like a
     // real removal, so the popup reported success while the site stayed blocked.
@@ -1002,7 +1012,12 @@ fn api_toggle_list(body: &str, state: &AppState) -> (&'static str, String) {
         );
     }
     let _ = eng.refresh();
-    state.sync_hosts(&eng);
+    if let Err(error) = state.sync_hosts(&eng) {
+        return (
+            "500 Internal Server Error",
+            serde_json::json!({"code": "enforcement_failed", "error": error}).to_string(),
+        );
+    }
 
     ("200 OK", r#"{"ok":true}"#.into())
 }
@@ -1107,7 +1122,9 @@ mod tests {
     fn ctx_with_extension(setup: impl FnOnce(&Database)) -> Arc<AppContext> {
         struct Connected;
         impl focuser_app::SystemSync for Connected {
-            fn sync_hosts(&self, _domains: &[String]) {}
+            fn sync_hosts(&self, _domains: &[String]) -> Result<(), String> {
+                Ok(())
+            }
             fn connected_browsers(&self) -> Vec<String> {
                 vec!["Chrome".to_string()]
             }

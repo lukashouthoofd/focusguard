@@ -14,7 +14,8 @@ use focuser_app::error::CommandError;
 use focuser_common::types::EntityId;
 
 /// Codes whose Rust message is more useful than a translated sentence would be.
-const INTENTIONALLY_UNTRANSLATED: &[&str] = &["validation", "core", "internal"];
+const INTENTIONALLY_UNTRANSLATED: &[&str] =
+    &["validation", "core", "internal", "enforcement_failed"];
 
 fn messages_json() -> serde_json::Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend/messages/en.json");
@@ -37,6 +38,7 @@ fn every_error_code_has_a_message_or_is_deliberately_raw() {
         CommandError::Protected,
         CommandError::WrongUnlockResponse,
         CommandError::Validation("x".into()),
+        CommandError::Enforcement("hosts file is read-only".into()),
         CommandError::Unsupported,
     ];
 
@@ -65,6 +67,7 @@ fn the_variant_list_above_is_complete() {
             CommandError::Protected => "protected",
             CommandError::WrongUnlockResponse => "wrong_unlock_response",
             CommandError::Validation(_) => "validation",
+            CommandError::Enforcement(_) => "enforcement_failed",
             CommandError::Unsupported => "unsupported",
             CommandError::Core(_) => "core",
             CommandError::Internal(_) => "internal",

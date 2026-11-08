@@ -2,10 +2,15 @@
 mod pipe;
 
 #[cfg(windows)]
+mod enforcement;
+
+#[cfg(windows)]
 mod windows_service_host {
+    use super::enforcement;
     use super::pipe;
     use std::{
         ffi::OsString,
+        path::PathBuf,
         sync::{Arc, Mutex},
         time::Duration,
     };
@@ -34,47 +39,96 @@ mod windows_service_host {
     pub fn run() -> anyhow::Result<()> {
         let args: Vec<OsString> = std::env::args_os().skip(1).collect();
         if args.first().is_some_and(|arg| arg == "--console") {
-            let owner_sid = match parse_owner_sid(&args[1..])? {
+            let options = parse_options(&args[1..])?;
+            let owner_sid = match options.owner_sid {
                 Some(sid) => sid,
                 None => pipe::current_user_sid_string()?,
             };
-            return run_console(owner_sid);
+            let service_sid = pipe::current_user_sid_string()?;
+            let (context, policy_enabled) = match (options.database_path, options.hosts_path) {
+                (Some(database), Some(hosts)) => (
+                    Arc::new(enforcement::open_context(
+                        database,
+                        hosts,
+                        enforcement::flush_system_dns,
+                    )?),
+                    true,
+                ),
+                (None, None) => (Arc::new(pipe::new_context()?), false),
+                _ => bail!("--database and --hosts-file must be supplied together"),
+            };
+            return run_console(owner_sid, service_sid, context, policy_enabled);
         }
 
         service_dispatcher::start(SERVICE_NAME, ffi_service_main)
             .context("start FocusGuard service dispatcher")
     }
 
-    fn parse_owner_sid(args: &[OsString]) -> anyhow::Result<Option<String>> {
-        let mut parsed = None;
+    #[derive(Default)]
+    struct ServiceOptions {
+        owner_sid: Option<String>,
+        database_path: Option<PathBuf>,
+        hosts_path: Option<PathBuf>,
+    }
+
+    fn parse_options(args: &[OsString]) -> anyhow::Result<ServiceOptions> {
+        let mut parsed = ServiceOptions::default();
         let mut args = args.iter();
         while let Some(arg) = args.next() {
             if arg == "--owner-sid" {
                 let sid = args.next().context("--owner-sid requires a SID")?;
                 let sid = sid.to_string_lossy().into_owned();
                 pipe::validate_sid(&sid)?;
-                parsed = Some(sid);
+                if parsed.owner_sid.replace(sid).is_some() {
+                    bail!("--owner-sid may only be supplied once");
+                }
+            } else if arg == "--database" {
+                let path = args.next().context("--database requires a path")?;
+                if parsed.database_path.replace(PathBuf::from(path)).is_some() {
+                    bail!("--database may only be supplied once");
+                }
+            } else if arg == "--hosts-file" {
+                let path = args.next().context("--hosts-file requires a path")?;
+                if parsed.hosts_path.replace(PathBuf::from(path)).is_some() {
+                    bail!("--hosts-file may only be supplied once");
+                }
             } else {
                 bail!("unknown argument: {}", arg.to_string_lossy());
             }
         }
+        if parsed.database_path.is_some() != parsed.hosts_path.is_some() {
+            bail!("--database and --hosts-file must be supplied together");
+        }
         Ok(parsed)
     }
 
-    fn run_console(owner_sid: String) -> anyhow::Result<()> {
-        let service_sid = pipe::current_user_sid_string()?;
-        let context = Arc::new(pipe::new_context()?);
+    fn run_console(
+        owner_sid: String,
+        service_sid: String,
+        context: Arc<focuser_app::AppContext>,
+        policy_enabled: bool,
+    ) -> anyhow::Result<()> {
         let runtime = Builder::new_multi_thread().enable_all().build()?;
         let listener = runtime
             .block_on(pipe::prepare(&owner_sid, &service_sid))
             .context("prepare secured pipe listener")?;
+        if policy_enabled && let Err(error) = enforcement::reconcile_once(&context) {
+            tracing::warn!(%error, "initial console policy reconciliation failed");
+        }
+        let reconcile_context = Arc::clone(&context);
         runtime.block_on(async move {
             eprintln!(
-                "FocusGuard service smoke host listening on {}; enforcement is not active.",
-                pipe::PIPE_NAME
+                "FocusGuard service {} listening on {}.",
+                if policy_enabled {
+                    "domain policy host"
+                } else {
+                    "smoke host; enforcement is not active"
+                },
+                pipe::PIPE_NAME,
             );
             tokio::select! {
-                result = pipe::serve(owner_sid, service_sid, listener, context) => result.context("named-pipe server stopped"),
+                result = pipe::serve(owner_sid, service_sid, listener, context, policy_enabled) => result.context("named-pipe server stopped"),
+                _ = async { if policy_enabled { enforcement::run_reconciler(reconcile_context).await } else { std::future::pending::<()>().await } } => Ok(()),
                 result = tokio::signal::ctrl_c() => result.context("wait for Ctrl+C"),
             }
         })
@@ -119,15 +173,20 @@ mod windows_service_host {
                 return Err(error);
             }
         };
+        if let Err(error) = enforcement::reconcile_once(&context) {
+            tracing::warn!(%error, "initial service policy reconciliation failed");
+        }
         status_handle.set_service_status(status(
             ServiceState::Running,
             ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
             ServiceExitCode::NO_ERROR,
         ))?;
 
+        let reconcile_context = Arc::clone(&context);
         let result = runtime.block_on(async move {
             tokio::select! {
-                result = pipe::serve(owner_sid, service_sid, listener, context) => result.context("named-pipe server stopped"),
+                result = pipe::serve(owner_sid, service_sid, listener, context, true) => result.context("named-pipe server stopped"),
+                _ = enforcement::run_reconciler(reconcile_context) => Ok(()),
                 _ = shutdown_rx => Ok(()),
             }
         });
@@ -158,8 +217,16 @@ mod windows_service_host {
         NamedPipeServer,
         Arc<focuser_app::AppContext>,
     )> {
-        let owner_sid = parse_owner_sid(&arguments)?
+        let options = parse_options(&arguments)?;
+        let owner_sid = options
+            .owner_sid
             .context("service configuration must include --owner-sid <SID>")?;
+        let database_path = options
+            .database_path
+            .context("service configuration must include --database <PATH>")?;
+        let hosts_path = options
+            .hosts_path
+            .context("service configuration must include --hosts-file <PATH>")?;
         let service_sid = pipe::service_sid_string(SERVICE_NAME)
             .context("resolve FocusGuard service SID; install with a service SID enabled")?;
         if !pipe::current_process_has_enabled_sid(&service_sid)? {
@@ -167,9 +234,11 @@ mod windows_service_host {
                 "service SID is not enabled in the SCM process token; enable SERVICE_SID_TYPE_UNRESTRICTED or SERVICE_SID_TYPE_RESTRICTED"
             );
         }
-        let context = Arc::new(pipe::new_context().map_err(|error| {
-            anyhow::anyhow!("initialize command context before reporting Running: {error}")
-        })?);
+        let context = Arc::new(enforcement::open_context(
+            database_path,
+            hosts_path,
+            enforcement::flush_system_dns,
+        )?);
         let runtime = Builder::new_multi_thread().enable_all().build()?;
         let listener = runtime
             .block_on(pipe::prepare(&owner_sid, &service_sid))

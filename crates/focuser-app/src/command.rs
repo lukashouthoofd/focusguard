@@ -358,8 +358,11 @@ pub struct BlockingHealth {
     pub active_lists: u32,
     /// An extension has checked in recently, so it is enforcing rules.
     pub extension_connected: bool,
-    /// The hosts file can be written — i.e. we have the privileges for it.
+    /// The hosts file can be opened for writing — a permission probe, not proof
+    /// that the most recent policy was applied.
     pub hosts_writable: bool,
+    /// Error returned by the most recent hosts-policy synchronization, if any.
+    pub hosts_sync_error: Option<String>,
     /// A keyword, wildcard or URL-path rule is active. Only the extension can
     /// enforce those; a hosts file has no way to express them.
     pub extension_only_rules: bool,
@@ -374,7 +377,9 @@ impl BlockingHealth {
     /// The extension alone is enough, and a writable hosts file alone is
     /// enough. Only losing both is a failure worth interrupting anyone over.
     pub fn is_failing(&self) -> bool {
-        self.active_lists > 0 && !self.extension_connected && !self.hosts_writable
+        self.active_lists > 0
+            && !self.extension_connected
+            && (!self.hosts_writable || self.hosts_sync_error.is_some())
     }
 }
 
@@ -546,6 +551,7 @@ mod health_tests {
             active_lists,
             extension_connected,
             hosts_writable,
+            hosts_sync_error: None,
             extension_only_rules: false,
             app_usage_measurable: true,
         }
@@ -560,6 +566,13 @@ mod health_tests {
     fn either_mechanism_alone_is_enough() {
         assert!(!health(1, true, false).is_failing());
         assert!(!health(1, false, true).is_failing());
+    }
+
+    #[test]
+    fn a_failed_hosts_sync_is_not_hidden_by_a_writable_file_probe() {
+        let mut status = health(1, false, true);
+        status.hosts_sync_error = Some("invalid owned section".into());
+        assert!(status.is_failing());
     }
 
     #[test]

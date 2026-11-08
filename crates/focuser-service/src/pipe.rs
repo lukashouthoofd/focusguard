@@ -87,6 +87,7 @@ pub async fn serve(
     service_sid: String,
     mut listener: NamedPipeServer,
     context: Arc<AppContext>,
+    policy_enabled: bool,
 ) -> io::Result<()> {
     validate_sid(&owner_sid)?;
     validate_sid(&service_sid)?;
@@ -106,10 +107,16 @@ pub async fn serve(
         listener = next_listener;
         let client_context = Arc::clone(&context);
         let client_owner_sid = owner_sid.clone();
+        let client_policy_enabled = policy_enabled;
         tasks.spawn(async move {
             let _permit = permit;
-            if let Err(error) =
-                handle_connection(connected, &client_owner_sid, &client_context).await
+            if let Err(error) = handle_connection(
+                connected,
+                &client_owner_sid,
+                &client_context,
+                client_policy_enabled,
+            )
+            .await
             {
                 tracing::debug!(%error, "rejected or failed named-pipe request");
             }
@@ -132,6 +139,7 @@ async fn handle_connection(
     mut pipe: NamedPipeServer,
     owner_sid: &str,
     context: &AppContext,
+    policy_enabled: bool,
 ) -> io::Result<()> {
     let request: RequestEnvelope = timeout(CLIENT_TIMEOUT, protocol::read_request_async(&mut pipe))
         .await
@@ -145,17 +153,26 @@ async fn handle_connection(
         ));
     }
 
-    // This first milestone is deliberately a probe-only host. Do not forward
-    // mutations into the headless NoopSync context and imply that they enforce.
-    let response = if matches!(request.command, Command::AppVersion) {
+    let response = if matches!(&request.command, Command::AppVersion)
+        || (policy_enabled && service_policy_command_allowed(&request.command))
+    {
         protocol::dispatch_service_request(context, request)
     } else {
         ResponseEnvelope::new(
             request.request_id,
             Err(CommandErrorPayload {
-                code: "service_smoke_only".into(),
-                message: "The Windows service host currently supports only its version probe."
-                    .into(),
+                code: if policy_enabled {
+                    "service_command_not_supported"
+                } else {
+                    "service_smoke_only"
+                }
+                .into(),
+                message: if policy_enabled {
+                    "This service build only supports exact-domain policy commands.".into()
+                } else {
+                    "The Windows service smoke host currently supports only its version probe."
+                        .into()
+                },
             }),
         )
     };
@@ -166,6 +183,27 @@ async fn handle_connection(
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response write deadline elapsed"))??;
     pipe.flush().await
+}
+
+/// The first policy-enabled service mode owns durable exact-domain hosts
+/// enforcement. Other features remain on the desktop until their workers move
+/// behind the service boundary too.
+fn service_policy_command_allowed(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::ListBlockLists
+            | Command::CreateBlockList { .. }
+            | Command::DeleteBlockList { .. }
+            | Command::ToggleBlockList { .. }
+            | Command::AddWebsiteRule { .. }
+            | Command::RemoveWebsiteRule { .. }
+            | Command::BulkImportWebsites { .. }
+            | Command::ClearAllWebsites
+            | Command::UpdateSchedule { .. }
+            | Command::GetBlockingHealth
+            | Command::ApplyBlocks
+            | Command::RemoveBlocks
+    )
 }
 
 fn create_pipe(
@@ -448,10 +486,13 @@ pub fn current_process_has_enabled_sid(sid: &str) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::ptr::null;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use focuser_app::CommandResult;
+    use focuser_app::{CommandResult, protocol::RequestEnvelope};
+    use focuser_common::types::WebsiteMatchType;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_CREATE_PIPE_INSTANCE, OPEN_EXISTING, SECURITY_IDENTIFICATION,
@@ -491,6 +532,99 @@ mod tests {
         }
     }
 
+    fn no_flush() -> io::Result<()> {
+        Ok(())
+    }
+
+    async fn send_policy_command(
+        name: &str,
+        owner_sid: &str,
+        service_sid: &str,
+        context: Arc<AppContext>,
+        command: Command,
+    ) -> ResponseEnvelope {
+        let server = create_pipe(name, owner_sid, service_sid, true).unwrap();
+        let owner_sid = owner_sid.to_owned();
+        let server_task = tokio::spawn(async move {
+            let server = server;
+            server.connect().await?;
+            handle_connection(server, &owner_sid, &context, true).await
+        });
+
+        let mut client = open_test_client(name).unwrap();
+        let request = RequestEnvelope::new(uuid::Uuid::new_v4(), command);
+        protocol::write_request_async(&mut client, &request)
+            .await
+            .unwrap();
+        let response = protocol::read_response_async(&mut client).await.unwrap();
+        server_task.await.unwrap().unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn policy_pipe_persists_and_reapplies_exact_domain_hosts_rules() {
+        let name = test_pipe_name();
+        let owner_sid = current_user_sid_string().unwrap();
+        let service_sid = current_user_sid_string().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("service.db");
+        let hosts = directory.path().join("hosts");
+        let original = "# user entry\r\n127.0.0.1 localhost\r\n";
+        fs::write(&hosts, original).unwrap();
+        let context =
+            Arc::new(crate::enforcement::open_context(&database, &hosts, no_flush).unwrap());
+
+        let response = send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::CreateBlockList {
+                name: "Work".into(),
+            },
+        )
+        .await;
+        let list = response.result.unwrap().as_block_list().unwrap().clone();
+        send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::ToggleBlockList {
+                id: list.id,
+                enabled: true,
+            },
+        )
+        .await
+        .result
+        .unwrap();
+        send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::AddWebsiteRule {
+                list_id: list.id,
+                rule: WebsiteMatchType::Domain("reddit.com".into()),
+            },
+        )
+        .await
+        .result
+        .unwrap();
+
+        let applied = fs::read_to_string(&hosts).unwrap();
+        assert!(applied.starts_with(original));
+        assert!(applied.contains("127.0.0.1 reddit.com\r\n"));
+
+        drop(context);
+        let reopened =
+            Arc::new(crate::enforcement::open_context(&database, &hosts, no_flush).unwrap());
+        crate::enforcement::reconcile_once(&reopened).unwrap();
+        let recovered = fs::read_to_string(&hosts).unwrap();
+        assert!(recovered.contains("127.0.0.1 reddit.com\r\n"));
+        assert_eq!(recovered, applied);
+    }
+
     #[tokio::test]
     async fn secured_pipe_round_trips_only_the_smoke_probe() {
         let name = test_pipe_name();
@@ -501,7 +635,7 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let server = server;
             server.connect().await?;
-            handle_connection(server, &owner_sid, &context).await
+            handle_connection(server, &owner_sid, &context, false).await
         });
         let mut client = open_test_client(&name).unwrap();
         let request = RequestEnvelope::new(uuid::Uuid::new_v4(), Command::AppVersion);
@@ -525,7 +659,7 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let server = server;
             server.connect().await?;
-            handle_connection(server, &owner_sid, &context).await
+            handle_connection(server, &owner_sid, &context, false).await
         });
         let mut client = open_test_client(&name).unwrap();
         let request = RequestEnvelope::new(uuid::Uuid::new_v4(), Command::DeleteAllData);
@@ -547,7 +681,7 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let server = server;
             server.connect().await?;
-            handle_connection(server, &owner_sid, &context).await
+            handle_connection(server, &owner_sid, &context, false).await
         });
         let mut client = open_test_client(&name).unwrap();
         client
@@ -576,7 +710,7 @@ mod tests {
         let server_task = tokio::spawn(async move {
             let server = server;
             server.connect().await?;
-            handle_connection(server, &owner_sid, &context).await
+            handle_connection(server, &owner_sid, &context, false).await
         });
         let mut client = open_test_client(&name).unwrap();
         let request = RequestEnvelope::new(uuid::Uuid::new_v4(), Command::AppVersion);

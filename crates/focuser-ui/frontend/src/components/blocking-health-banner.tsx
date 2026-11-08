@@ -24,7 +24,12 @@ export function BlockingHealthBanner() {
   const [installing, setInstalling] = useState(false);
 
   if (!health.data?.active_lists) return null;
-  if (health.data.extension_connected || health.data.hosts_writable) return null;
+  if (
+    health.data.extension_connected ||
+    (health.data.hosts_writable && !health.data.hosts_sync_error)
+  ) {
+    return null;
+  }
 
   // Only Windows has a way to run the app with the rights for the hosts file.
   // Elsewhere that advice would mean running a desktop app as root.
@@ -40,6 +45,11 @@ export function BlockingHealthBanner() {
         <div className="min-w-0 flex-1 text-sm">
           <p className="font-medium text-foreground">{m.health_title()}</p>
           <p className="mt-0.5 text-muted-foreground">{body}</p>
+          {health.data.hosts_sync_error && (
+            <p className="mt-1 break-words text-xs text-muted-foreground">
+              {health.data.hosts_sync_error}
+            </p>
+          )}
         </div>
         <Button variant="outline" size="sm" icon={<Puzzle />} onClick={() => setInstalling(true)}>
           {m.health_get_extension()}

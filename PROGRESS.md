@@ -1,5 +1,13 @@
 # Progress
 
+## 2026-11-08 - Persistent domain-policy service prototype
+
+- Added a shared injectable hosts-file writer with balanced marker validation, DNS-label validation, preservation of unrelated file bytes, conflict detection, and atomic replacement (`ReplaceFileW` on Windows). Removing the owned section preserves text that follows it. Windows tests operate only on temporary files.
+- The command context now returns and records hosts-sync failures. Blocking health reports a failed last synchronization even when an append-open permission probe succeeds; mutation responses say clearly that saved policy may not yet be enforced.
+- Added an opt-in service policy mode backed by a persistent SQLite database and `BlockEngine`. The secured pipe permits a narrow set of domain-policy commands; startup and a two-second reconciler reload durable state and apply apex plus `www` hosts entries. It does not enumerate deeper subdomains or enforce URL paths. DNS flush failures stay pending and are retried even when the hosts content is already current; startup also flushes cache after restart. Test-only DNS flush functions make failure paths observable without changing machine DNS.
+- `cargo test --workspace --locked --quiet` passed all Rust tests and doctests; `cargo fmt --all -- --check`, strict workspace Clippy, and `cargo build --workspace --locked` passed. Frontend lint, 280 tests, and production build passed. Vite emitted a large-main-chunk advisory.
+- These results are unit/temporary-file and local named-pipe evidence, not an installed-service or end-to-end browser block test. The desktop UI and installer do not use this service yet. No real Windows hosts file or DNS cache was changed; SCM lifecycle, recovery after service crash/reboot, standard-user elevation/ACL behavior, and alternate DNS paths remain unverified. Exact-domain hosts entries do not block URL paths and can be bypassed through DoH, VPNs, proxies, alternate resolvers/browsers, or local administrator access.
+
 ## 2026-11-08 — Windows service IPC smoke host
 
 - Added the `focuser-service` Windows binary with an SCM dispatcher and an explicit `--console` mode for local transport tests. It is not installed by the app or wired into the desktop UI.

@@ -181,6 +181,7 @@ beforeEach(() => {
             active_lists: 1,
             extension_connected: false,
             hosts_writable: false,
+            hosts_sync_error: null,
             extension_only_rules: false,
             app_usage_measurable: true,
           },

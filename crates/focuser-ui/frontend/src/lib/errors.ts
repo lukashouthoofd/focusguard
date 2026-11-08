@@ -6,6 +6,7 @@
  * for whoever is looking at the screen.
  *
  * Codes with no entry here fall back to the Rust message. That is deliberate:
+ * `enforcement_failed` errors also carry actionable system detail and stay untranslated.
  * `validation`, `core` and `internal` carry detail in their text — which field
  * was wrong, which file could not be opened — and a generic translated
  * sentence would throw that away. Better untranslated and specific than

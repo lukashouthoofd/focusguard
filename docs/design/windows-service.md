@@ -1,6 +1,6 @@
 # Windows enforcement service design
 
-Status: first Windows service-host milestone. `focuser-app::protocol` defines typed request/response envelopes, bounded synchronous framing, and Tokio async framing with a 1 MiB payload cap. `crates/focuser-service` now has an SCM entry point, a console test mode, and a local byte-mode named-pipe server. Its only supported request is `AppVersion`; mutations are rejected before they reach a headless `NoopSync` context. The service is not wired into the installer or desktop client, owns no durable policy, and runs no enforcement. Pipe tests pass on the development Windows host. The service was not installed, and no machine-wide policy was changed.
+Status: Windows service prototype. `focuser-app::protocol` defines typed request/response envelopes, bounded synchronous framing, and Tokio async framing with a 1 MiB payload cap. `crates/focuser-service` has an SCM entry point, a console test mode, and a local byte-mode named-pipe server. Its opt-in policy mode opens a persistent SQLite database, accepts a narrow set of domain-policy commands, and reconciles domain rules as apex and `www` hosts entries into an injected hosts-file path. It cannot enumerate deeper subdomains, and hosts entries do not express URL paths. The service is not wired into the installer or desktop client. Windows tests use temporary databases and hosts files; the service was not installed, and no machine-wide policy was changed. SCM execution and actual hosts-file permissions, DNS behavior, and recovery remain unverified.
 
 ## Why a service is required
 
@@ -10,7 +10,7 @@ The current UI process opens the SQLite database in `crates/focuser-ui/src/main.
 
 ## Smoke host
 
-On Windows, run `cargo run -p focuser-service -- --console` to start the local smoke host as the current user; Ctrl+C stops it. Its named pipe accepts only the `AppVersion` probe. The executable also has an SCM dispatcher, but this repository has no service installer action or service SID configuration yet. Console mode uses the current process SID and provides no privilege separation. `cargo test -p focuser-service --locked` exercises the local pipe ACL, probe, denied mutation, mismatched caller SID, invalid frame, first-instance behavior, and startup instance-access check on Windows.
+On Windows, run `cargo run -p focuser-service -- --console` to start the in-memory smoke host as the current user; its pipe accepts only the `AppVersion` probe. The opt-in persistent policy mode takes explicit paths: `cargo run -p focuser-service -- --console --database <PATH> --hosts-file <PATH>`. Use a disposable hosts-file fixture for manual tests; this mode edits the path supplied. The pipe permits only block-list, website-rule, schedule, apply/remove, health, and version operations. Console mode uses the current process SID and provides no privilege separation. The executable has an SCM dispatcher that requires owner SID, database, and hosts-file configuration, but this repository has no service installer action or end-to-end SCM test. `cargo test -p focuser-service --locked` exercises the local pipe ACL, probe, denied mutation, mismatched caller SID, invalid frame, first-instance behavior, policy persistence, exact-domain reconciliation, and injected write/DNS-flush failures on Windows.
 
 ## Ownership model
 
@@ -50,8 +50,8 @@ Do not add a kernel driver to the first service milestone. Evaluate user-mode Wi
 ## Implementation sequence
 
 1. The shared command layer and lock-preserving mutation tests already live in `focuser-app`; its `protocol` module supplies typed, versioned, bounded wire frames. Async framing and transport-level peer authorization now exist; expand identity/session and lifecycle coverage.
-2. Add a Windows-only service executable and named-pipe server; this smoke-host step is implemented and tested without installing it on the development host. SCM startup resolves the unique service SID and creates/probes pipe instances before reporting `Running`. It is not yet an enforcement service.
-3. Move the loopback API and enforcement workers into the service; make the UI a client and remove Windows UI-owned host/process enforcement.
+2. Add a Windows-only service executable and named-pipe server; the smoke host and opt-in persistent exact-domain hosts-policy prototype are implemented and tested without installing it on the development host. SCM startup resolves the unique service SID and creates/probes pipe instances before reporting `Running`, but this path is not installed or end-to-end tested.
+3. Integrate the desktop UI and loopback API with the service, migrate existing policy into service-owned storage, and remove Windows UI-owned host/process enforcement.
 4. Add service installation, ACLs, recovery actions, data migration, and admin cleanup to the installer only after the service and pipe tests pass.
 5. Run the full installer and behavior matrix in a disposable Windows VM. Treat each supported Windows version, standard-user boundary, and administrator boundary as separate evidence.
 

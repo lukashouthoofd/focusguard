@@ -5,6 +5,7 @@ pub mod browser;
 pub mod error;
 pub mod extension;
 pub mod host;
+pub mod hosts_file;
 pub mod ipc;
 pub mod pomodoro;
 pub mod process;

@@ -9,19 +9,16 @@ use std::time::{Duration, Instant};
 
 use focuser_common::browser::identify_browser;
 use focuser_common::extension::BrowserType;
-use focuser_common::host::any_host_matches;
 use focuser_common::process;
 use focuser_common::types::AppMatchType;
 use focuser_common::uninstall;
+use focuser_common::{
+    host::any_host_matches,
+    hosts_file::{self, HostsSyncOutcome},
+};
 use tracing::{info, warn};
 
 use crate::AppState;
-
-const HOSTS_BEGIN: &str = "# ──── BEGIN FOCUSGUARD BLOCK ────";
-const HOSTS_END: &str = "# ──── END FOCUSGUARD BLOCK ────";
-/// For whoever opens the file after FocusGuard went without cleaning up, for
-/// instance when an antivirus removed it (#54).
-const HOSTS_NOTE: &str = "# Added by FocusGuard to block sites. If FocusGuard is gone, delete this block from BEGIN to END.";
 
 /// Runs the blocking loop in a background thread.
 /// Every 3 seconds: re-sync hosts file, check for blocked processes,
@@ -101,10 +98,10 @@ pub fn run_blocking_loop(state: Arc<AppState>) {
                     info!(
                         "Extension connected — switching from hosts file to extension-based blocking"
                     );
-                    let _ = remove_hosts_blocks();
+                    sync_hosts_file(&state, &[]);
                     was_using_hosts = false;
                 } else {
-                    sync_hosts_file(&[]);
+                    sync_hosts_file(&state, &[]);
                 }
             } else {
                 // No extension — use hosts file as fallback
@@ -121,7 +118,7 @@ pub fn run_blocking_loop(state: Arc<AppState>) {
                 }
                 domains.sort();
                 domains.dedup();
-                sync_hosts_file(&domains);
+                sync_hosts_file(&state, &domains);
             }
 
             // Close blocked apps, and those over today's allowance.
@@ -217,27 +214,24 @@ fn enforcement_settings(db: &focuser_core::db::Database) -> Enforcement {
 /// Apply blocks to the system hosts file.
 pub fn apply_hosts_blocks(domains: &[String]) -> Result<(), String> {
     let path = hosts_path();
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
-    let new_content = replace_section(&content, domains);
-    std::fs::write(&path, &new_content)
-        .map_err(|e| format!("Cannot write {path}: {e}. Run as administrator."))?;
-    flush_dns();
-    info!(count = domains.len(), "Hosts file updated");
+    match hosts_file::sync_path(&path, domains)
+        .map_err(|error| format!("{error}. Run as administrator."))?
+    {
+        HostsSyncOutcome::Updated => {
+            flush_dns();
+            info!(count = domains.len(), "Hosts file updated");
+        }
+        HostsSyncOutcome::Unchanged => {}
+    }
     Ok(())
+}
+
+/// Remove FocusGuard's section without altering unrelated hosts-file entries.
+pub fn remove_hosts_blocks() -> Result<(), String> {
+    apply_hosts_blocks(&[])
 }
 
 /// Remove all FocusGuard entries from hosts file.
-pub fn remove_hosts_blocks() -> Result<(), String> {
-    let path = hosts_path();
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("Cannot read {path}: {e}"))?;
-    let new_content = replace_section(&content, &[]);
-    std::fs::write(&path, &new_content)
-        .map_err(|e| format!("Cannot write {path}: {e}. Run as administrator."))?;
-    flush_dns();
-    info!("Hosts file cleaned");
-    Ok(())
-}
-
 /// Whether the OS hosts file can be written right now.
 ///
 /// Opened for append and immediately dropped: that needs the same privileges
@@ -253,34 +247,19 @@ pub fn hosts_writable() -> bool {
 /// the UI can say that rules are armed but not actually in force.
 static HOSTS_WRITE_FAILED: AtomicBool = AtomicBool::new(false);
 
-fn sync_hosts_file(domains: &[String]) {
-    let path = hosts_path();
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let new_content = replace_section(&content, domains);
-    if content == new_content {
-        return;
-    }
-
-    match std::fs::write(&path, &new_content) {
+fn sync_hosts_file(state: &AppState, domains: &[String]) {
+    match state.sync_hosts_with(domains) {
         Ok(()) => {
             // Only log the recovery, not every successful write.
             if HOSTS_WRITE_FAILED.swap(false, Ordering::Relaxed) {
                 info!("Hosts file is writable again");
             }
-            flush_dns();
         }
-        Err(e) => {
-            // Almost always "not running as administrator". Logged once per
-            // spell rather than every three seconds, but no longer swallowed —
-            // this is the difference between blocking and only looking like it.
+        Err(error) => {
             if !HOSTS_WRITE_FAILED.swap(true, Ordering::Relaxed) {
                 warn!(
-                    path = %path,
-                    error = %e,
-                    "Cannot write the hosts file — website blocking will not take effect                      without the browser extension. Run FocusGuard as administrator."
+                    error = %error,
+                    "Cannot synchronize website rules to the hosts file — website blocking will not take effect without the browser extension. Run FocusGuard as administrator."
                 );
             }
         }
@@ -645,44 +624,6 @@ fn hosts_path() -> String {
     }
 }
 
-fn replace_section(content: &str, domains: &[String]) -> String {
-    let mut result = String::with_capacity(content.len() + domains.len() * 30);
-    let mut in_section = false;
-
-    for line in content.lines() {
-        if line.trim() == HOSTS_BEGIN {
-            in_section = true;
-            continue;
-        }
-        if line.trim() == HOSTS_END {
-            in_section = false;
-            continue;
-        }
-        if !in_section {
-            result.push_str(line);
-            result.push('\n');
-        }
-    }
-
-    if !domains.is_empty() {
-        if !result.ends_with('\n') {
-            result.push('\n');
-        }
-        result.push_str(HOSTS_BEGIN);
-        result.push('\n');
-        result.push_str(HOSTS_NOTE);
-        result.push('\n');
-        for domain in domains {
-            result.push_str(&format!("127.0.0.1 {domain}\n"));
-            result.push_str(&format!("::1 {domain}\n"));
-        }
-        result.push_str(HOSTS_END);
-        result.push('\n');
-    }
-
-    result
-}
-
 fn flush_dns() {
     #[cfg(windows)]
     {
@@ -775,27 +716,6 @@ mod tests {
         );
         assert_eq!(closed.len(), 1);
         assert_eq!(asked, 0);
-    }
-
-    #[test]
-    fn the_hosts_block_says_how_to_remove_it_by_hand() {
-        let original = "127.0.0.1 localhost\n";
-        let blocked = replace_section(original, &["reddit.com".into()]);
-        let lines: Vec<&str> = blocked.lines().collect();
-        let begin = lines.iter().position(|l| *l == HOSTS_BEGIN).unwrap();
-        // Read by whoever opens the file after FocusGuard is gone without
-        // cleaning up, for instance after an antivirus removed it (#54).
-        assert!(
-            lines[begin + 1].starts_with("# ") && lines[begin + 1].contains("delete"),
-            "{blocked}"
-        );
-
-        assert_eq!(
-            replace_section(&blocked, &["reddit.com".into()]),
-            blocked,
-            "writing it again changes nothing"
-        );
-        assert_eq!(replace_section(&blocked, &[]), original);
     }
 
     #[test]

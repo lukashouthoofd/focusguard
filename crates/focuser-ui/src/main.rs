@@ -40,8 +40,8 @@ pub use focuser_app::{AppContext as AppState, PomodoroEvent};
 struct HostsSync;
 
 impl focuser_app::SystemSync for HostsSync {
-    fn sync_hosts(&self, domains: &[String]) {
-        let _ = blocker::apply_hosts_blocks(domains);
+    fn sync_hosts(&self, domains: &[String]) -> Result<(), String> {
+        blocker::apply_hosts_blocks(domains)
     }
 
     fn running_browsers(&self) -> Vec<String> {

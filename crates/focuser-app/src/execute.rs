@@ -64,7 +64,7 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
 
             engine.db().update_block_list(&list)?;
             engine.refresh()?;
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Unit)
         }
 
@@ -75,7 +75,7 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
             // without ever being unlocked) would otherwise linger forever.
             let _ = engine.db().take_unlock_challenge(id);
             engine.refresh()?;
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Unit)
         }
 
@@ -95,7 +95,7 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
             list.updated_at = chrono::Utc::now();
             engine.db().update_block_list(&list)?;
             engine.refresh()?;
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Unit)
         }
 
@@ -168,7 +168,7 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
                 list.websites.clear();
                 n
             })?;
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Count(cleared))
         }
 
@@ -354,7 +354,7 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
 
             engine.db().update_block_list(&list)?;
             engine.refresh()?;
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Unit)
         }
 
@@ -557,13 +557,14 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
                 active_lists,
                 extension_connected: !ctx.connected_browsers().is_empty(),
                 hosts_writable: ctx.hosts_writable(),
+                hosts_sync_error: ctx.hosts_sync_error(),
                 extension_only_rules: engine.has_extension_only_rules(),
                 app_usage_measurable: focuser_common::session::app_usage_measurable(),
             }))
         }
 
         Command::ApplyBlocks => {
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Unit)
         }
 
@@ -572,7 +573,8 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
             ensure_nothing_protected(&engine)?;
             // An empty domain set is how "unblock everything" is expressed —
             // the sync writes the list, so an empty list clears the section.
-            ctx.sync_hosts_with(&[]);
+            ctx.sync_hosts_with(&[])
+                .map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Unit)
         }
 
@@ -608,7 +610,7 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
                 lock_rounds.unwrap_or(0),
             )?;
             // A work phase suspends allowances and can change what is blocked.
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::PomodoroSession(Box::new(session)))
         }
 
@@ -622,14 +624,14 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
         Command::PomodoroSkip => {
             ensure_focus_unlocked(&engine)?;
             let advanced = pomodoro::skip_phase(&mut engine)?.is_some();
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Flag(advanced))
         }
 
         Command::PomodoroStop => {
             ensure_focus_unlocked(&engine)?;
             let stopped = pomodoro::stop_session(&mut engine)?;
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Flag(stopped))
         }
 
@@ -800,7 +802,7 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
             }
 
             engine.refresh()?;
-            ctx.sync_hosts(&engine);
+            ctx.sync_hosts(&engine).map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Count(document.block_lists.len() as u32))
         }
 
@@ -809,7 +811,8 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
             engine.db().delete_all_data()?;
             engine.refresh()?;
             // Nothing is blocked any more, so clear the hosts file outright.
-            ctx.sync_hosts_with(&[]);
+            ctx.sync_hosts_with(&[])
+                .map_err(CommandError::Enforcement)?;
             Ok(CommandResult::Unit)
         }
 
@@ -1031,7 +1034,7 @@ fn add_to_list(
 
     engine.db().update_block_list(&list)?;
     engine.refresh()?;
-    ctx.sync_hosts(engine);
+    ctx.sync_hosts(engine).map_err(CommandError::Enforcement)?;
     Ok(())
 }
 
@@ -1151,7 +1154,9 @@ mod tests {
     fn ctx_with_extension() -> AppContext {
         struct Connected;
         impl crate::context::SystemSync for Connected {
-            fn sync_hosts(&self, _domains: &[String]) {}
+            fn sync_hosts(&self, _domains: &[String]) -> Result<(), String> {
+                Ok(())
+            }
             fn connected_browsers(&self) -> Vec<String> {
                 vec!["Chrome".to_string()]
             }
@@ -1168,7 +1173,9 @@ mod tests {
     fn ctx_without_hosts_access() -> AppContext {
         struct Unprivileged;
         impl crate::context::SystemSync for Unprivileged {
-            fn sync_hosts(&self, _domains: &[String]) {}
+            fn sync_hosts(&self, _domains: &[String]) -> Result<(), String> {
+                Ok(())
+            }
             fn hosts_writable(&self) -> bool {
                 false
             }
@@ -1302,6 +1309,39 @@ mod tests {
             &stored[0].match_type,
             WebsiteMatchType::Keyword(k) if k == "casino"
         ));
+    }
+
+    #[test]
+    fn hosts_write_failure_is_reported_after_the_policy_change_is_saved() {
+        struct FailingSync;
+        impl crate::context::SystemSync for FailingSync {
+            fn sync_hosts(&self, _domains: &[String]) -> Result<(), String> {
+                Err("fixture write failure".into())
+            }
+        }
+
+        let database = Database::open_in_memory().unwrap();
+        let context = AppContext::new(
+            BlockEngine::new(database).unwrap(),
+            std::sync::Arc::new(FailingSync),
+        );
+        let list = create(&context, "Sites");
+        let error = execute(
+            &context,
+            Command::AddWebsiteRule {
+                list_id: list.id,
+                rule: WebsiteMatchType::Domain("reddit.com".into()),
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "enforcement_failed");
+        assert!(error.to_string().contains("policy was saved"));
+        assert_eq!(lists(&context)[0].websites.len(), 1);
+        assert_eq!(
+            context.hosts_sync_error().as_deref(),
+            Some("fixture write failure")
+        );
     }
 
     #[test]
