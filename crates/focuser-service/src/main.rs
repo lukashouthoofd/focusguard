@@ -162,7 +162,8 @@ mod windows_service_host {
     }
 
     fn service_main(arguments: Vec<OsString>) {
-        let diagnostic_path = diagnostics_path_from_arguments(&arguments);
+        let process_arguments = service_process_arguments();
+        let diagnostic_path = diagnostics_path_from_arguments(&process_arguments);
         record_diagnostic(
             diagnostic_path.as_deref(),
             "SCM dispatched service entry point",
@@ -177,7 +178,6 @@ mod windows_service_host {
     }
 
     fn diagnostics_path_from_arguments(arguments: &[OsString]) -> Option<PathBuf> {
-        let arguments = strip_service_name_argument(arguments.to_vec());
         let mut args = arguments.iter();
         while let Some(argument) = args.next() {
             if argument == "--diagnostics-file" {
@@ -187,6 +187,13 @@ mod windows_service_host {
         None
     }
 
+    /// ImagePath arguments belong to the service process command line. The
+    /// ServiceMain argument vector contains only the service name and any
+    /// arguments supplied to StartService by its caller.
+    fn service_process_arguments() -> Vec<OsString> {
+        std::env::args_os().skip(1).collect()
+    }
+
     fn record_diagnostic(path: Option<&std::path::Path>, message: &str) {
         let Some(path) = path else { return };
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
@@ -194,8 +201,11 @@ mod windows_service_host {
         }
     }
 
-    fn run_service(arguments: Vec<OsString>) -> anyhow::Result<()> {
-        let arguments = strip_service_name_argument(arguments);
+    fn run_service(_dispatcher_arguments: Vec<OsString>) -> anyhow::Result<()> {
+        // Keep the dispatcher vector out of configuration parsing: it carries
+        // StartService arguments, not the process ImagePath arguments.
+        let _service_specific_arguments = strip_service_name_argument(_dispatcher_arguments);
+        let arguments = service_process_arguments();
         let diagnostic_path = diagnostics_path_from_arguments(&arguments);
         record_diagnostic(
             diagnostic_path.as_deref(),
@@ -395,9 +405,8 @@ mod windows_service_host {
         }
 
         #[test]
-        fn reads_diagnostics_path_after_dispatcher_service_name() {
+        fn reads_diagnostics_path_from_executable_arguments() {
             let arguments = vec![
-                OsString::from(SERVICE_NAME),
                 OsString::from("--diagnostics-file"),
                 OsString::from("C:\\temp\\service.log"),
             ];
