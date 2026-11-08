@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use focuser_app::{Command, CommandErrorPayload, CommandResult};
 use thiserror::Error;
+#[cfg(windows)]
 use uuid::Uuid;
 
 pub use focuser_common::ipc::FOCUSGUARD_SERVICE_PIPE_NAME as SERVICE_PIPE_NAME;
