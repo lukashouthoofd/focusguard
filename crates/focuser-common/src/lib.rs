@@ -9,6 +9,8 @@ pub mod hosts_file;
 pub mod ipc;
 pub mod pomodoro;
 pub mod process;
+#[cfg(windows)]
+pub mod process_identity;
 pub mod schedule;
 pub mod session;
 pub mod types;

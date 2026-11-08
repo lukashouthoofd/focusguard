@@ -88,9 +88,9 @@ The public repository was created at <https://github.com/lukashouthoofd/focusgua
 
 ## 2026-11-08 - Windows process identity prerequisite
 
-- Added a Windows-only service process snapshot that records PID, session ID, owner SID, image path/name, and creation time. The session ID comes from the token tied to the opened process handle, avoiding a second lookup by PID. Any future service termination must reopen the process, compare the complete identity and configured owner SID, then terminate through that same handle; PID reuse cannot redirect a validated action.
-- The primitive refuses PID reuse, other-owner processes, session 0, FocusGuard executable names, and the service's own PID. Windows tests successfully terminate only a copied sacrificial test executable and verify owner mismatch, stale identity, and protected-target rejection.
-- This is groundwork, not an app blocker: it is not wired into the SCM service loop and app-rule mutations remain denied. Session 0 cannot use the desktop's `WM_CLOSE` flow for another session, so active WTS session selection and a per-session helper for save prompts/grace handling are required before enabling app rules. No SCM identity, other-user, or VM behavior has been tested.
+- Added a shared Windows-only process identity in `focuser-common`, with PID, session ID, owner SID, image path/name, and creation time. The session ID comes from the token tied to the opened process handle, avoiding a second lookup by PID. The serializable identity can be reused by the service and a future per-session UI helper. Any service termination must reopen the process, compare the full identity and configured owner SID, then terminate through that same handle.
+- Windows tests successfully terminate only a copied sacrificial process and verify owner mismatch, stale identity, protected-target rejection, and identity serialization. `focuser-common` passed 141 unit tests plus doctests; the service passed its 14 remaining tests after the six process tests moved to the common crate. Strict common Clippy passed.
+- This is groundwork, not an app blocker: it is not wired into the SCM service loop and app-rule mutations remain denied. Session 0 cannot use the desktop's `EnumWindows`/`WM_CLOSE` flow for another session. The design now requires a separately authenticated per-session helper, a full 30-second fallback grace when no helper responds, and visible helper health before app rules can be enabled. Service-account, SCM, other-user, and VM behavior remain untested.
 
 ## 2026-11-07 — repository scaffold and direction
 

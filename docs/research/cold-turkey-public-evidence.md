@@ -1,6 +1,12 @@
 ﻿# Public Cold Turkey Evidence Ledger
 
-Date checked: 2026-11-07. Evidence is limited to public product documentation and official Windows documentation. No Cold Turkey executable was installed, executed, or decompiled. Product-documentation claims are not treated as independently tested runtime behavior.
+Public documentation checked: 2026-11-07. That review was limited to official product documentation and Windows documentation; no Cold Turkey executable was installed, executed, or decompiled as part of it. Product-documentation claims are not treated as independently tested runtime behavior.
+
+## Separate REA artifact evidence
+
+On 2026-11-08, REA recorded a read-only static inspection of a pre-existing local `Cold Turkey Blocker.exe` artifact (Evidence ID `ev_1b58188d8da15bdea285229bc04b4b28d72eb08151494d5cb45d38622eb9b909`, SHA-256 `5bc434b593d219d3686a403296d02e3d163234504900ce94fa04a6b2e982d509`). The retained progress summary reports an x64 .NET Framework 4.8 assembly, SQLite and WinForms references, and managed metadata names related to blocks, schedules, timers, app/web rules, Task Manager, time changes, and strict-password settings. These are artifact metadata observations only. They do not establish runtime behavior, service architecture, persistence, filtering, or anti-bypass strength.
+
+The canonical REA Evidence JSON is not checked into this repository, so these details can only be cross-referenced to the Evidence ID and hash recorded in `PROGRESS.md`; do not treat the summary as a substitute for the full record. No licensing or entitlement mechanism was analyzed, no paid-only behavior was accessed, and the executable was not run.
 
 ## Publicly documented behavior
 

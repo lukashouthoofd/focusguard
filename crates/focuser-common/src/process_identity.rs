@@ -7,6 +7,7 @@
 
 use std::{ffi::c_void, io, mem::size_of, path::Path, ptr::null_mut};
 
+use serde::{Deserialize, Serialize};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME, HANDLE, LocalFree},
     Security::Authorization::ConvertSidToStringSidW,
@@ -30,7 +31,7 @@ const PROTECTED_PROCESS_NAMES: [&str; 3] = [
     "focusguard.exe",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProcessIdentity {
     pub pid: u32,
     pub session_id: u32,
@@ -301,6 +302,15 @@ mod tests {
         assert!(current.owner_sid.starts_with("S-1-"));
         assert!(current.image_name.to_ascii_lowercase().ends_with(".exe"));
         assert!(current.creation_time > 0);
+    }
+
+    #[test]
+    fn process_identity_round_trips_for_helper_ipc() {
+        let expected = snapshot_process(std::process::id()).unwrap();
+        let encoded = serde_json::to_vec(&expected).unwrap();
+        let decoded: ProcessIdentity = serde_json::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded, expected);
     }
 
     #[test]
