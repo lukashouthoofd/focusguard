@@ -36,6 +36,9 @@ pub enum ClientError {
     #[error("FocusGuard service is unavailable: {0}")]
     Connect(#[source] io::Error),
 
+    #[error("could not query FocusGuard service registration in SCM: {0}")]
+    ScmRegistration(#[source] io::Error),
+
     #[error("could not authenticate the FocusGuard service pipe server: {0}")]
     ServerIdentity(#[source] io::Error),
 
@@ -61,7 +64,7 @@ pub enum ClientError {
 pub fn is_service_registered() -> Result<bool, ClientError> {
     #[cfg(windows)]
     {
-        service_registered_windows().map_err(ClientError::Connect)
+        service_registered_windows().map_err(ClientError::ScmRegistration)
     }
     #[cfg(not(windows))]
     {
