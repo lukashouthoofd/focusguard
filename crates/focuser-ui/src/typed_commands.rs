@@ -97,6 +97,14 @@ fn service_client_error(error: focuser_client::ClientError) -> CommandErrorPaylo
             code: "service_unavailable".into(),
             message,
         },
+        ClientError::ScmRegistration(_) => CommandErrorPayload {
+            code: "service_registration_error".into(),
+            message,
+        },
+        ClientError::ServerIdentity(_) => CommandErrorPayload {
+            code: "service_identity_error".into(),
+            message,
+        },
         ClientError::Timeout => CommandErrorPayload {
             code: "service_timeout".into(),
             message,
@@ -109,6 +117,32 @@ fn service_client_error(error: focuser_client::ClientError) -> CommandErrorPaylo
             code: "service_backend_windows_only".into(),
             message,
         },
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use std::io;
+
+    use super::service_client_error;
+    use focuser_client::ClientError;
+
+    #[test]
+    fn scm_registration_errors_are_reported_to_the_ui() {
+        let error =
+            ClientError::ScmRegistration(io::Error::new(io::ErrorKind::PermissionDenied, "test"));
+        let payload = service_client_error(error);
+
+        assert_eq!(payload.code, "service_registration_error");
+    }
+
+    #[test]
+    fn server_identity_errors_are_reported_to_the_ui() {
+        let error =
+            ClientError::ServerIdentity(io::Error::new(io::ErrorKind::PermissionDenied, "test"));
+        let payload = service_client_error(error);
+
+        assert_eq!(payload.code, "service_identity_error");
     }
 }
 
