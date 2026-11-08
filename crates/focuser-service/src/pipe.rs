@@ -627,7 +627,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             rejection,
-            focuser_client::ClientError::Connect(error)
+            focuser_client::ClientError::ServerIdentity(error)
                 if error.kind() == io::ErrorKind::PermissionDenied
         ));
         assert!(rejected_server_task.await.unwrap().is_err());

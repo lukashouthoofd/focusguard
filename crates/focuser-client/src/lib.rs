@@ -36,6 +36,9 @@ pub enum ClientError {
     #[error("FocusGuard service is unavailable: {0}")]
     Connect(#[source] io::Error),
 
+    #[error("could not authenticate the FocusGuard service pipe server: {0}")]
+    ServerIdentity(#[source] io::Error),
+
     #[error("FocusGuard service did not respond within five seconds")]
     Timeout,
 
@@ -186,7 +189,7 @@ async fn execute_windows(
         ServerIdentity::ScmService(service_name) => verify_scm_service_process(&pipe, service_name),
         ServerIdentity::ProcessId(expected_pid) => verify_server_pid(&pipe, expected_pid),
     };
-    identity_check.map_err(ClientError::Connect)?;
+    identity_check.map_err(ClientError::ServerIdentity)?;
 
     let request_id = Uuid::new_v4();
     let request = focuser_app::protocol::RequestEnvelope::new(request_id, command);

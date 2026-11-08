@@ -230,6 +230,11 @@ try {
     $createdService = $true
     Invoke-Checked 'sc.exe' @('sidtype', $serviceName, 'unrestricted')
     Invoke-Checked 'sc.exe' @('failure', $serviceName, 'reset=', '0', 'actions=', 'restart/5000/restart/5000/restart/5000')
+    # The unelevated native host must query the SCM-reported PID before using
+    # the pipe. Grant the configured owner only SERVICE_QUERY_STATUS; retain
+    # service control for SYSTEM and administrators.
+    $serviceDacl = "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;LC;;;$ownerSid)"
+    Invoke-Checked 'sc.exe' @('sdset', $serviceName, $serviceDacl)
     Invoke-Checked 'sc.exe' @('start', $serviceName)
 
     $initial = Wait-ServiceRunning
