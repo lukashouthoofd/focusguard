@@ -1,5 +1,14 @@
 # Progress
 
+## 2026-11-08 — Windows service IPC smoke host
+
+- Added the `focuser-service` Windows binary with an SCM dispatcher and an explicit `--console` mode for local transport tests. It is not installed by the app or wired into the desktop UI.
+- Added a byte-mode, overlapped named-pipe server with an explicit protected DACL, remote-client rejection, first-instance ownership, owner user-SID impersonation checks, five-second frame deadlines, a four-instance ceiling, and at most three request workers. Client access uses individual rights and excludes `FILE_CREATE_PIPE_INSTANCE`; the service process, LocalSystem, and administrators have full control. Impersonation and token reversion run on a dedicated OS thread so a revert failure cannot leave a Tokio worker impersonating a client.
+- The host accepts only `AppVersion`. Mutations are rejected before dispatch because this milestone uses an in-memory database and `NoopSync`; it is deliberately not enforcement and has no durable policy or hosts/process effects. The prototype does not bind access to the logon SID, so same-account terminal sessions are not isolated. Peer identity has only been exercised in same-account console tests; the SCM account privilege path and its startup failure behavior remain unverified.
+- Added async framing helpers to `focuser-app::protocol` and tests for async round trips and oversize rejection. Real local Windows pipe tests cover a version probe, mutation denial, malformed oversized frame disconnect, first-instance collision, and SID validation.
+- `cargo test -p focuser-service --locked` passed five Windows tests, including mismatched caller-SID denial. `cargo test --workspace --locked --quiet`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo fmt --all -- --check`, and `cargo build --workspace --locked` all passed. The initial pipe tests exposed insufficient client ACL rights; adding exact individual read/write/attribute rights fixed the live connection without granting pipe-instance creation.
+- The smoke host was not installed. No installer, database migration, hosts edit, firewall rule, service recovery action, or blocking behavior was changed or tested.
+
 ## 2026-11-08 — FocusGuard implementation baseline
 
 The public repository was created at <https://github.com/lukashouthoofd/focusguard> after the user requested it. It now contains the MIT-licensed Focuser 0.11.5 source baseline, with its original notice preserved at `LICENSES/Focuser-MIT.txt` and attribution in `docs/upstream-focuser.md`. FocusGuard-specific work is tracked in this repository. The source import does not include Cold Turkey or Lockdown code.

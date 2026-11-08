@@ -4,7 +4,7 @@ Inventory date: 2026-11-08. This is a manifest-level audit of the locked depende
 
 ## Rust
 
-`cargo metadata --locked --format-version 1` reports 678 external packages across the workspace's Windows, macOS, Linux, and other target-specific dependency branches. All 678 declare a license expression. The inventory includes MIT/Apache-2.0, BSD, ISC, Unicode-3.0, Zlib, Unlicense, 17 MPL-2.0 packages, one CDLA-Permissive-2.0 package, and two `r-efi` versions whose expression offers MIT, Apache-2.0, or LGPL-2.1-or-later. No GPL-only expression was found.
+`cargo metadata --locked --format-version 1` reports 680 external packages across the workspace's Windows, macOS, Linux, and other target-specific dependency branches. All 680 declare a license expression. The inventory includes MIT/Apache-2.0, BSD, ISC, Unicode-3.0, Zlib, Unlicense, 17 MPL-2.0 packages, one CDLA-Permissive-2.0 package, and two `r-efi` versions whose expression offers MIT, Apache-2.0, or LGPL-2.1-or-later. The new Windows service host uses `windows-service` and `widestring`, each offering MIT OR Apache-2.0. No GPL-only expression was found.
 
 The count includes packages not built on Windows and duplicates at different versions. A release should generate notices from the actual Windows target and include all required text notices.
 

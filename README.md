@@ -4,9 +4,9 @@ FocusGuard is a free, open-source focus blocker for Windows. It is being develop
 
 ## Current state
 
-The repository contains Focuser's Rust rules engine, Tauri desktop app, browser extension, and existing tests. Its current Windows blocking loop still runs inside the desktop app. Website domain fallback uses the Windows hosts file; URL paths and similar browser rules depend on the extension. If the app exits unexpectedly, process enforcement stops until it starts again. This is a development baseline, not yet the Windows service-backed product described in the design notes.
+The repository contains Focuser's Rust rules engine, Tauri desktop app, browser extension, and existing tests. A Windows SCM host and secured named-pipe smoke server now exist, but the service accepts only a version probe and owns no policy. The current Windows blocking loop still runs inside the desktop app. Website domain fallback uses the Windows hosts file; URL paths and similar browser rules depend on the extension. If the app exits unexpectedly, process enforcement stops until it starts again. This is not yet a service-backed blocker.
 
-The Rust workspace, desktop frontend, and browser extension have been built and their automated tests pass in this checkout. Runtime blocking has not yet been verified in a Windows VM. No installer has been run, no Windows service has been installed, and no hosts, firewall, or system policy changes have been made by this project.
+The Rust workspace, desktop frontend, and browser extension have automated tests. The named-pipe smoke server has also passed local Windows pipe tests. Runtime blocking has not yet been verified in a Windows VM. No installer has been run, no Windows service has been installed, and no hosts, firewall, or system policy changes have been made by this project.
 
 ## Goals
 

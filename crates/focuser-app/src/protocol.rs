@@ -6,6 +6,7 @@
 use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::{AppContext, Command, CommandErrorPayload, CommandResult, execute};
@@ -108,6 +109,79 @@ pub fn write_response<W: Write>(writer: &mut W, response: &ResponseEnvelope) -> 
         Err(error) => return Err(payload_error_to_io(error)),
     };
     write_encoded_frame(writer, &payload)
+}
+
+/// Asynchronous counterpart to [`read_frame`], used by overlapped Windows
+/// named-pipe transports so a slow or disconnected peer does not block a Tokio
+/// worker thread.
+pub async fn read_frame_async<R: AsyncRead + Unpin, T: DeserializeOwned>(
+    reader: &mut R,
+) -> io::Result<T> {
+    let mut header = [0; 4];
+    reader.read_exact(&mut header).await?;
+    let length = u32::from_be_bytes(header) as usize;
+    if length == 0 || length > MAX_FRAME_BYTES {
+        return Err(invalid_data(format!("invalid frame length: {length}")));
+    }
+
+    let mut payload = vec![0; length];
+    reader.read_exact(&mut payload).await?;
+    serde_json::from_slice(&payload).map_err(invalid_data)
+}
+
+/// Asynchronous counterpart to [`write_frame`].
+pub async fn write_frame_async<W: AsyncWrite + Unpin, T: Serialize>(
+    writer: &mut W,
+    message: &T,
+) -> io::Result<()> {
+    let payload = encode_payload(message).map_err(payload_error_to_io)?;
+    write_encoded_frame_async(writer, &payload).await
+}
+
+pub async fn read_request_async<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> io::Result<RequestEnvelope> {
+    let request: RequestEnvelope = read_frame_async(reader).await?;
+    validate_version(request.version)?;
+    Ok(request)
+}
+
+pub async fn write_request_async<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    request: &RequestEnvelope,
+) -> io::Result<()> {
+    validate_version(request.version)?;
+    write_frame_async(writer, request).await
+}
+
+pub async fn read_response_async<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> io::Result<ResponseEnvelope> {
+    let response: ResponseEnvelope = read_frame_async(reader).await?;
+    validate_version(response.version)?;
+    Ok(response)
+}
+
+pub async fn write_response_async<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    response: &ResponseEnvelope,
+) -> io::Result<()> {
+    validate_version(response.version)?;
+    let payload = match encode_payload(response) {
+        Ok(payload) => payload,
+        Err(PayloadError::TooLarge) => {
+            let fallback = ResponseEnvelope::new(
+                response.request_id,
+                Err(CommandErrorPayload {
+                    code: OVERSIZED_RESPONSE_CODE.into(),
+                    message: "Response exceeds the 1 MiB service protocol limit; narrow the query or split the operation.".into(),
+                }),
+            );
+            encode_payload(&fallback).map_err(payload_error_to_io)?
+        }
+        Err(error) => return Err(payload_error_to_io(error)),
+    };
+    write_encoded_frame_async(writer, &payload).await
 }
 
 /// Execute an already decoded and authorized request through the shared command
@@ -271,6 +345,16 @@ fn write_encoded_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<(
     writer.write_all(payload)
 }
 
+async fn write_encoded_frame_async<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+) -> io::Result<()> {
+    let length = u32::try_from(payload.len())
+        .map_err(|_| invalid_data("frame length cannot be represented"))?;
+    writer.write_all(&length.to_be_bytes()).await?;
+    writer.write_all(payload).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +374,43 @@ mod tests {
         assert_eq!(decoded.version, PROTOCOL_VERSION);
         assert_eq!(decoded.request_id, request.request_id);
         assert!(matches!(decoded.command, Command::ListBlockLists));
+    }
+
+    #[tokio::test]
+    async fn async_request_and_response_round_trip() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let request = RequestEnvelope::new(Uuid::new_v4(), Command::AppVersion);
+        let expected_id = request.request_id;
+
+        let client_task = async move {
+            write_request_async(&mut client, &request).await.unwrap();
+            let response = read_response_async(&mut client).await.unwrap();
+            assert_eq!(response.request_id, expected_id);
+            assert!(response.result.is_ok());
+        };
+        let server_task = async move {
+            let request = read_request_async(&mut server).await.unwrap();
+            assert!(matches!(request.command, Command::AppVersion));
+            write_response_async(
+                &mut server,
+                &ResponseEnvelope::new(request.request_id, Ok(CommandResult::Unit)),
+            )
+            .await
+            .unwrap();
+        };
+        tokio::join!(client_task, server_task);
+    }
+
+    #[tokio::test]
+    async fn async_reader_rejects_oversized_frame_before_reading_payload() {
+        let (mut writer, mut reader) = tokio::io::duplex(8);
+        writer
+            .write_all(&((MAX_FRAME_BYTES as u32 + 1).to_be_bytes()))
+            .await
+            .unwrap();
+
+        let error = read_request_async(&mut reader).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
