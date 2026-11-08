@@ -291,7 +291,7 @@ jobs:
         working-directory: crates/focuser-ui
         shell: pwsh
         run: |
-          cargo tauri build --bundles nsis --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          cargo tauri build --bundles nsis --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false,"resources":{"resources/focusguard-service.exe":"focusguard-service.exe","resources/focuser-native.exe":"focuser-native.exe"}}}'
           $packages = @(Get-ChildItem ../../target/release/bundle/nsis -File -Filter '*.exe')
           if ($packages.Count -ne 1) { throw "Expected one NSIS package, found $($packages.Count)." }
           if ($packages[0].Length -le 0) { throw 'The NSIS package is empty.' }
