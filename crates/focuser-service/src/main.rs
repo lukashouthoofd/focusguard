@@ -267,16 +267,28 @@ mod windows_service_host {
         let app_reconcile_context = Arc::clone(&context);
         let app_owner_sid = owner_sid.clone();
         let service_pid = std::process::id();
+        let pipe_diagnostics = diagnostic_path.clone();
+        let domain_diagnostics = diagnostic_path.clone();
+        let app_diagnostics = diagnostic_path.clone();
         record_diagnostic(diagnostic_path.as_deref(), "entering async service loop");
         let result = runtime.block_on(async move {
             tokio::select! {
-                result = pipe::serve(owner_sid, service_sid, listener, context, true) => result.context("named-pipe server stopped"),
-                _ = enforcement::run_reconciler(reconcile_context) => Ok(()),
-                _ = focuser_service::app_enforcement::run_app_enforcement_reconciler(
-                    app_reconcile_context,
-                    app_owner_sid,
-                    service_pid,
-                ) => Ok(()),
+                result = async move {
+                    record_diagnostic(pipe_diagnostics.as_deref(), "polling named-pipe server future");
+                    pipe::serve(owner_sid, service_sid, listener, context, true).await
+                } => result.context("named-pipe server stopped"),
+                _ = async move {
+                    record_diagnostic(domain_diagnostics.as_deref(), "polling domain reconciler future");
+                    enforcement::run_reconciler(reconcile_context).await
+                } => Ok(()),
+                _ = async move {
+                    record_diagnostic(app_diagnostics.as_deref(), "polling app reconciler future");
+                    focuser_service::app_enforcement::run_app_enforcement_reconciler(
+                        app_reconcile_context,
+                        app_owner_sid,
+                        service_pid,
+                    ).await
+                } => Ok(()),
                 _ = shutdown_rx => Ok(()),
             }
         });
