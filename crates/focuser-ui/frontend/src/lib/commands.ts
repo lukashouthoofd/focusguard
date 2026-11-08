@@ -8,6 +8,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import type {
   Allowance,
   AllowanceMatch,
@@ -28,7 +29,7 @@ import type {
   WebsiteMatchType,
   WebsiteRuleKind,
 } from "@/bindings";
-import { send } from "./transport";
+import { isTauri, send } from "./transport";
 
 export type {
   Allowance,
@@ -63,6 +64,23 @@ function expect<K extends CommandResult["kind"]>(
 }
 
 const run = (command: Command) => send<CommandResult>(command);
+
+/**
+ * Selects the command owner before any policy query is made. A failed probe is
+ * surfaced by the shell; it must never silently select the local database.
+ */
+export function useServiceMode() {
+  return useQuery({
+    queryKey: ["service-mode"] as const,
+    queryFn: async () => {
+      if (!isTauri()) return false;
+      return invoke<boolean>("is_service_mode");
+    },
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchInterval: false,
+    retry: false,
+  });
+}
 
 // ─── Query keys ─────────────────────────────────────────────────────
 

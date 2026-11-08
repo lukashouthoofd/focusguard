@@ -125,23 +125,80 @@ fn main() {
         }
     }
 
+    let service_mode_requested =
+        cfg!(windows) && std::env::args().any(|arg| arg == "--service-client");
+    #[cfg(windows)]
+    let service_registered = match focuser_client::is_service_registered() {
+        Ok(registered) => registered,
+        Err(error) => {
+            // If SCM cannot be queried, fail closed into service mode. The
+            // command path will show the connection problem instead of
+            // starting a second local policy owner.
+            warn!(%error, "Could not determine whether the FocusGuard service is registered");
+            true
+        }
+    };
+    #[cfg(not(windows))]
+    let service_registered = false;
+    let service_mode = service_mode_requested || service_registered;
+
     let project_dirs = ProjectDirs::from("com", "publikhq", "FocusGuard")
-        .expect("Could not determine project directories");
+        .expect("Could not determine data directory");
     let data_dir = project_dirs.data_dir();
     std::fs::create_dir_all(data_dir).expect("Could not create data directory");
+    let owner_lock_path = data_dir.join("policy-owner.lock");
 
-    let db_path = data_dir.join("focusguard.db");
-    info!(path = %db_path.display(), "Opening database");
+    // Both UI modes hold the same exclusive OS file handle. It is released by
+    // the OS on normal exit or crash, and prevents local/service UI processes
+    // from concurrently writing the shared hosts policy. The service
+    // registration check above keeps local mode from returning after install.
+    let (command_backend, state_for_blocker, runtime_owner_lock) = match acquire_policy_owner_lock(
+        &owner_lock_path,
+    ) {
+        Err(error) => {
+            let message = format!(
+                "Another FocusGuard UI process owns policy access. Close it before opening this window. ({error})"
+            );
+            warn!(%error, "Could not acquire the FocusGuard policy-owner lock");
+            (
+                typed_commands::RuntimeBackend::Unavailable(focuser_app::CommandErrorPayload {
+                    code: "policy_owner_conflict".into(),
+                    message,
+                }),
+                None,
+                None,
+            )
+        }
+        Ok(owner_lock) if service_mode => {
+            info!("Starting Windows service-client mode without opening a local policy database");
+            (
+                typed_commands::RuntimeBackend::Service,
+                None,
+                Some(owner_lock),
+            )
+        }
+        Ok(owner_lock) => {
+            let db_path = data_dir.join("focusguard.db");
+            info!(path = %db_path.display(), "Opening database");
 
-    let db = Database::open(&db_path).expect("Could not open database");
-    let engine = BlockEngine::new(db).expect("Could not initialize engine");
+            let db = Database::open(&db_path).expect("Could not open database");
+            let engine = BlockEngine::new(db).expect("Could not initialize engine");
+            let state = Arc::new(AppState::new(engine, Arc::new(HostsSync)));
+            (
+                typed_commands::RuntimeBackend::Local(Arc::clone(&state)),
+                Some(state),
+                Some(owner_lock),
+            )
+        }
+    };
+    let local_enforcement_active = state_for_blocker.is_some();
 
-    let state = Arc::new(AppState::new(engine, Arc::new(HostsSync)));
-
-    let state_for_blocker = Arc::clone(&state);
-
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+    let builder = tauri::Builder::default();
+    let builder = if service_mode {
+        // A service client must not be swallowed by a local-mode process.
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Another instance tried to launch — bring existing window to front.
             // Not for the second of the two logon launches, though.
             if launched_at_login(&args) {
@@ -153,6 +210,9 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+    };
+
+    builder
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -160,10 +220,12 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
-        .manage(state)
+        .manage(command_backend)
+        .manage(runtime_owner_lock)
         .invoke_handler(tauri::generate_handler![
             // Everything the application can do goes through one command.
             typed_commands::run_command,
+            typed_commands::is_service_mode,
             // Native shims that need a Tauri handle or OS process access.
             native::pick_app_file,
             native::pick_import_file,
@@ -177,6 +239,16 @@ fn main() {
             sound::preview_sound,
         ])
         .setup(move |app| {
+            let Some(state_for_blocker) = state_for_blocker.as_ref().cloned() else {
+                // In service-client mode closing the UI never stops blocking.
+                // Do not start local enforcement/API workers or remove hosts
+                // entries when this client exits.
+                if let Some(window) = app.get_webview_window("main") {
+                    window.show()?;
+                }
+                return Ok(());
+            };
+
             // Once, on a fresh install. This used to re-enable autostart on
             // every launch whenever it found it off, which meant nobody could
             // ever turn it off — see #10.
@@ -368,10 +440,12 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while building FocusGuard")
-        .run(|_app_handle, event| {
+        .run(move |_app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 // Always clean up hosts file when the app exits
-                let _ = blocker::remove_hosts_blocks();
+                if local_enforcement_active {
+                    let _ = blocker::remove_hosts_blocks();
+                }
             }
         });
 }
@@ -379,6 +453,20 @@ fn main() {
 /// Both logon registrations (the Run entry and the installer's task) pass this.
 fn launched_at_login(args: &[String]) -> bool {
     args.iter().any(|a| a == "--autostart")
+}
+
+/// Holds one policy-owner handle for the lifetime of this desktop process.
+/// Windows sharing mode zero makes all local/service UI launch modes mutually
+/// exclusive; the kernel releases the handle if the process exits or crashes.
+fn acquire_policy_owner_lock(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    options.open(path)
 }
 
 /// Get the extension store URL for a given browser.
@@ -805,6 +893,92 @@ mod tests {
     use super::*;
     use focuser_common::types::{BlockList, Protection};
     use focuser_core::Database;
+
+    #[cfg(windows)]
+    #[test]
+    fn policy_owner_lock_excludes_other_ui_modes_and_recovers_after_exit() {
+        let path = std::env::temp_dir().join(format!(
+            "focusguard-policy-owner-{}.lock",
+            uuid::Uuid::new_v4()
+        ));
+        let first = acquire_policy_owner_lock(&path).unwrap();
+        assert!(
+            run_policy_owner_lock_child(&path, "probe-blocked", None)
+                .wait_with_output()
+                .expect("wait for blocked lock probe")
+                .status
+                .success()
+        );
+        drop(first);
+
+        let ready = path.with_extension("ready");
+        let mut holder = run_policy_owner_lock_child(&path, "hold", Some(&ready));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if !ready.exists() {
+            let _ = holder.kill();
+            let _ = holder.wait();
+            panic!("child process did not acquire the lock");
+        }
+
+        holder.kill().expect("force-kill lock holder");
+        holder.wait().expect("reap lock holder");
+
+        assert!(
+            run_policy_owner_lock_child(&path, "probe-acquired", None)
+                .wait_with_output()
+                .expect("wait for crash recovery lock probe")
+                .status
+                .success()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn run_policy_owner_lock_child(
+        path: &std::path::Path,
+        mode: &str,
+        ready_path: Option<&std::path::Path>,
+    ) -> std::process::Child {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .arg("--exact")
+            .arg("tests::policy_owner_lock_child_probe")
+            .arg("--nocapture")
+            .env("FOCUSGUARD_OWNER_LOCK_CHILD_PATH", path)
+            .env("FOCUSGUARD_OWNER_LOCK_CHILD_MODE", mode);
+        if let Some(ready_path) = ready_path {
+            command.env("FOCUSGUARD_OWNER_LOCK_CHILD_READY", ready_path);
+        }
+        command.spawn().expect("start lock test subprocess")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn policy_owner_lock_child_probe() {
+        let Ok(path) = std::env::var("FOCUSGUARD_OWNER_LOCK_CHILD_PATH") else {
+            return;
+        };
+        let path = std::path::Path::new(&path);
+        match std::env::var("FOCUSGUARD_OWNER_LOCK_CHILD_MODE").as_deref() {
+            Ok("probe-blocked") => assert!(acquire_policy_owner_lock(path).is_err()),
+            Ok("probe-acquired") => drop(acquire_policy_owner_lock(path).unwrap()),
+            Ok("hold") => {
+                let _lock = acquire_policy_owner_lock(path).unwrap();
+                std::fs::write(
+                    std::env::var("FOCUSGUARD_OWNER_LOCK_CHILD_READY").unwrap(),
+                    b"ready",
+                )
+                .unwrap();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                }
+            }
+            mode => panic!("unexpected child probe mode: {mode:?}"),
+        }
+    }
 
     fn prompt(reason: api::ClosedReason, closing_in_secs: Option<u64>) -> api::BrowserPrompt {
         api::BrowserPrompt {

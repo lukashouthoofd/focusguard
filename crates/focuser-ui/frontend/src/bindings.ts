@@ -15,6 +15,11 @@ export const commands = {
 	 *  especially — freezes the window.
 	 */
 	runCommand: (command: Command) => typedError<CommandResult, CommandErrorPayload>(__TAURI_INVOKE("run_command", { command })),
+	/**
+	 *  Lets the frontend select the service-only screen without starting a
+	 *  service request or guessing from local state.
+	 */
+	isServiceMode: () => __TAURI_INVOKE<boolean>("is_service_mode"),
 };
 
 /* Types */

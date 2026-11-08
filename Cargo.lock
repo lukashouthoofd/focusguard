@@ -1491,6 +1491,7 @@ dependencies = [
  "chrono",
  "directories",
  "focuser-app",
+ "focuser-client",
  "focuser-common",
  "focuser-core",
  "objc2-app-kit",

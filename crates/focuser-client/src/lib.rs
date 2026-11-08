@@ -52,6 +52,20 @@ pub enum ClientError {
     UnsupportedPlatform,
 }
 
+/// Whether Windows has a registered FocusGuard SCM service, including a
+/// registered service that is currently stopped. The desktop uses this to
+/// avoid starting a second local policy writer after service installation.
+pub fn is_service_registered() -> Result<bool, ClientError> {
+    #[cfg(windows)]
+    {
+        service_registered_windows().map_err(ClientError::Connect)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}
+
 /// Execute a command through the installed Windows service.
 ///
 /// SCM must report the pipe server PID as the running, own-process
@@ -71,6 +85,47 @@ pub async fn execute(command: Command) -> Result<CommandResult, ClientError> {
     {
         let _ = command;
         Err(ClientError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(windows)]
+fn service_registered_windows() -> io::Result<bool> {
+    use std::{os::windows::ffi::OsStrExt, ptr::null_mut};
+
+    use windows_sys::Win32::{
+        Foundation::ERROR_SERVICE_DOES_NOT_EXIST,
+        System::Services::{CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT},
+    };
+
+    struct ServiceHandle(*mut core::ffi::c_void);
+    impl Drop for ServiceHandle {
+        fn drop(&mut self) {
+            unsafe { CloseServiceHandle(self.0) };
+        }
+    }
+
+    let manager = unsafe { OpenSCManagerW(null_mut(), null_mut(), SC_MANAGER_CONNECT) };
+    if manager.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let manager = ServiceHandle(manager);
+
+    let service_name: Vec<u16> = std::ffi::OsStr::new(SERVICE_NAME)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let service = unsafe { OpenServiceW(manager.0, service_name.as_ptr(), 0) };
+    if !service.is_null() {
+        let service = ServiceHandle(service);
+        drop(service);
+        return Ok(true);
+    }
+
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
+        Ok(false)
+    } else {
+        Err(error)
     }
 }
 

@@ -29,6 +29,15 @@ use tauri::State;
 
 use crate::AppState;
 
+/// Selects the command owner for the current UI process. A registered SCM
+/// service selects service mode even when it is stopped, so local mode never
+/// starts a competing policy writer after service installation.
+pub enum RuntimeBackend {
+    Local(Arc<AppState>),
+    Service,
+    Unavailable(CommandErrorPayload),
+}
+
 /// Execute one command against the shared context.
 ///
 /// Errors are flattened to [`CommandErrorPayload`] (`{ code, message }`) because
@@ -37,21 +46,88 @@ use crate::AppState;
 /// `(async)` on a sync function puts it on Tauri's blocking thread pool.
 /// Without it the default is the event-loop thread, and a slow command — icons
 /// especially — freezes the window.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn run_command(
-    state: State<'_, Arc<AppState>>,
+pub async fn run_command(
+    backend: State<'_, RuntimeBackend>,
     command: Command,
 ) -> Result<CommandResult, CommandErrorPayload> {
-    execute(&state, command).map_err(CommandErrorPayload::from)
+    match backend.inner() {
+        RuntimeBackend::Local(state) => tauri::async_runtime::spawn_blocking({
+            let state = Arc::clone(state);
+            move || execute(state.as_ref(), command)
+        })
+        .await
+        .map_err(|error| CommandErrorPayload {
+            code: "command_task_failed".into(),
+            message: error.to_string(),
+        })?
+        .map_err(CommandErrorPayload::from),
+        RuntimeBackend::Service => {
+            #[cfg(windows)]
+            {
+                focuser_client::execute(command)
+                    .await
+                    .map_err(service_client_error)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = command;
+                Err(CommandErrorPayload {
+                    code: "service_backend_windows_only".into(),
+                    message: "The service backend is only available on Windows.".into(),
+                })
+            }
+        }
+        RuntimeBackend::Unavailable(error) => Err(CommandErrorPayload {
+            code: error.code.clone(),
+            message: error.message.clone(),
+        }),
+    }
+}
+
+#[cfg(windows)]
+fn service_client_error(error: focuser_client::ClientError) -> CommandErrorPayload {
+    use focuser_client::ClientError;
+
+    let message = error.to_string();
+    match error {
+        ClientError::Service(payload) => payload,
+        ClientError::Connect(_) => CommandErrorPayload {
+            code: "service_unavailable".into(),
+            message,
+        },
+        ClientError::Timeout => CommandErrorPayload {
+            code: "service_timeout".into(),
+            message,
+        },
+        ClientError::InvalidResponse(_) | ClientError::Protocol(_) => CommandErrorPayload {
+            code: "service_protocol_error".into(),
+            message,
+        },
+        ClientError::UnsupportedPlatform => CommandErrorPayload {
+            code: "service_backend_windows_only".into(),
+            message,
+        },
+    }
+}
+
+/// Lets the frontend select the service-only screen without starting a
+/// service request or guessing from local state.
+#[tauri::command]
+#[specta::specta]
+pub fn is_service_mode(backend: State<'_, RuntimeBackend>) -> bool {
+    !matches!(backend.inner(), RuntimeBackend::Local(_))
 }
 
 /// The specta builder, used both to export bindings and to document the surface.
 ///
 /// Kept in one place so the export path and the registered commands cannot drift.
 pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
-    tauri_specta::Builder::<tauri::Wry>::new()
-        .commands(tauri_specta::collect_commands![run_command])
+    tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
+        run_command,
+        is_service_mode
+    ])
 }
 
 /// Where generated bindings are written, relative to the crate root.

@@ -13,12 +13,15 @@ import { BlockingHealthBanner } from "@/components/blocking-health-banner";
 import { TitleBar } from "@/components/title-bar";
 import { AppIcon } from "@/components/ui/app-icon";
 import { LiveBadge } from "@/components/ui/badge";
+import { QueryState } from "@/components/ui/feedback";
+import { Page } from "@/components/ui/page";
 import { UpdatePill } from "@/components/update-pill";
-import { usePomodoroStatus } from "@/lib/commands";
+import { usePomodoroStatus, useServiceMode } from "@/lib/commands";
 import { formatCountdown } from "@/lib/duration";
 import { useApplySavedLanguage } from "@/lib/language";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
+import { ServicePolicy } from "@/routes/service-policy";
 
 // `label` is a function, not a string: a message read at module scope would
 // freeze the locale that was active when this file was imported.
@@ -34,8 +37,48 @@ const NAV = [
 ] as const;
 
 export function AppLayout() {
-  // Wraps every route, so this is the one place the saved language reaches the
-  // whole app rather than only the page that happens to read it.
+  const mode = useServiceMode();
+
+  // Do not mount any local-settings or protection queries until the command
+  // owner is known. A failed probe is visible and cannot fall through to a
+  // per-user backend.
+  if (mode.isPending || mode.error) {
+    return (
+      <div className="flex h-screen flex-col overflow-hidden bg-deep">
+        <TitleBar />
+        <main className="app-canvas min-w-0 flex-1 overflow-y-auto bg-background">
+          <Page>
+            <QueryState
+              isPending={mode.isPending}
+              error={mode.error}
+              onRetry={() => void mode.refetch()}
+              isRetrying={mode.isFetching}
+            >
+              {null}
+            </QueryState>
+          </Page>
+        </main>
+      </div>
+    );
+  }
+
+  if (mode.data) {
+    return (
+      <div className="flex h-screen flex-col overflow-hidden bg-deep">
+        <TitleBar />
+        <main className="app-canvas min-w-0 flex-1 overflow-y-auto bg-background">
+          <ServicePolicy />
+        </main>
+      </div>
+    );
+  }
+
+  return <LocalAppLayout />;
+}
+
+function LocalAppLayout() {
+  // Wraps every local route, so the saved language reaches the whole app.
+  // Service mode deliberately does not read user-local settings.
   useApplySavedLanguage();
 
   return (
