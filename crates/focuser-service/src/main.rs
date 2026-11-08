@@ -10,6 +10,8 @@ mod windows_service_host {
     use super::pipe;
     use std::{
         ffi::OsString,
+        fs::OpenOptions,
+        io::Write,
         path::PathBuf,
         sync::{Arc, Mutex},
         time::Duration,
@@ -69,6 +71,7 @@ mod windows_service_host {
         owner_sid: Option<String>,
         database_path: Option<PathBuf>,
         hosts_path: Option<PathBuf>,
+        diagnostics_path: Option<PathBuf>,
     }
 
     fn parse_options(args: &[OsString]) -> anyhow::Result<ServiceOptions> {
@@ -91,6 +94,15 @@ mod windows_service_host {
                 let path = args.next().context("--hosts-file requires a path")?;
                 if parsed.hosts_path.replace(PathBuf::from(path)).is_some() {
                     bail!("--hosts-file may only be supplied once");
+                }
+            } else if arg == "--diagnostics-file" {
+                let path = args.next().context("--diagnostics-file requires a path")?;
+                if parsed
+                    .diagnostics_path
+                    .replace(PathBuf::from(path))
+                    .is_some()
+                {
+                    bail!("--diagnostics-file may only be supplied once");
                 }
             } else {
                 bail!("unknown argument: {}", arg.to_string_lossy());
@@ -150,13 +162,45 @@ mod windows_service_host {
     }
 
     fn service_main(arguments: Vec<OsString>) {
+        let diagnostic_path = diagnostics_path_from_arguments(&arguments);
+        record_diagnostic(
+            diagnostic_path.as_deref(),
+            "SCM dispatched service entry point",
+        );
         if let Err(error) = run_service(arguments) {
+            record_diagnostic(
+                diagnostic_path.as_deref(),
+                &format!("service startup/runtime failed: {error:#}"),
+            );
             eprintln!("FocusGuard service failed: {error:#}");
+        }
+    }
+
+    fn diagnostics_path_from_arguments(arguments: &[OsString]) -> Option<PathBuf> {
+        let arguments = strip_service_name_argument(arguments.to_vec());
+        let mut args = arguments.iter();
+        while let Some(argument) = args.next() {
+            if argument == "--diagnostics-file" {
+                return args.next().map(PathBuf::from);
+            }
+        }
+        None
+    }
+
+    fn record_diagnostic(path: Option<&std::path::Path>, message: &str) {
+        let Some(path) = path else { return };
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{message}");
         }
     }
 
     fn run_service(arguments: Vec<OsString>) -> anyhow::Result<()> {
         let arguments = strip_service_name_argument(arguments);
+        let diagnostic_path = diagnostics_path_from_arguments(&arguments);
+        record_diagnostic(
+            diagnostic_path.as_deref(),
+            "registering SCM control handler",
+        );
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
         let handler_tx = Arc::clone(&shutdown_tx);
@@ -172,11 +216,20 @@ mod windows_service_host {
                 _ => ServiceControlHandlerResult::NotImplemented,
             })?;
 
+        record_diagnostic(diagnostic_path.as_deref(), "reporting startup checkpoint 1");
         report_start_pending(&status_handle, 1)?;
+        record_diagnostic(
+            diagnostic_path.as_deref(),
+            "preparing service runtime and policy",
+        );
         let (owner_sid, service_sid, runtime, listener, context) =
             match prepare_service(arguments, &status_handle) {
                 Ok(prepared) => prepared,
                 Err(error) => {
+                    record_diagnostic(
+                        diagnostic_path.as_deref(),
+                        &format!("service preparation failed: {error:#}"),
+                    );
                     let _ = status_handle.set_service_status(status(
                         ServiceState::Stopped,
                         ServiceControlAccept::empty(),
@@ -185,6 +238,7 @@ mod windows_service_host {
                     return Err(error);
                 }
             };
+        record_diagnostic(diagnostic_path.as_deref(), "reporting running status");
         status_handle.set_service_status(status(
             ServiceState::Running,
             ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
@@ -235,7 +289,10 @@ mod windows_service_host {
         NamedPipeServer,
         Arc<focuser_app::AppContext>,
     )> {
+        let diagnostic_path = diagnostics_path_from_arguments(&arguments);
+        record_diagnostic(diagnostic_path.as_deref(), "reporting startup checkpoint 2");
         report_start_pending(status_handle, 2)?;
+        record_diagnostic(diagnostic_path.as_deref(), "parsing service arguments");
         let options = parse_options(&arguments)?;
         let owner_sid = options
             .owner_sid
@@ -246,6 +303,7 @@ mod windows_service_host {
         let hosts_path = options
             .hosts_path
             .context("service configuration must include --hosts-file <PATH>")?;
+        record_diagnostic(diagnostic_path.as_deref(), "validating service SID");
         report_start_pending(status_handle, 3)?;
         let service_sid = pipe::service_sid_string(SERVICE_NAME)
             .context("resolve FocusGuard service SID; install with a service SID enabled")?;
@@ -254,17 +312,24 @@ mod windows_service_host {
                 "service SID is not enabled in the SCM process token; enable SERVICE_SID_TYPE_UNRESTRICTED or SERVICE_SID_TYPE_RESTRICTED"
             );
         }
+        record_diagnostic(diagnostic_path.as_deref(), "opening policy database");
         report_start_pending(status_handle, 4)?;
         let context = Arc::new(enforcement::open_context(
             database_path,
             hosts_path,
             enforcement::flush_system_dns,
         )?);
+        record_diagnostic(
+            diagnostic_path.as_deref(),
+            "reconciling initial domain policy",
+        );
         report_start_pending(status_handle, 5)?;
         enforcement::reconcile_once(&context)
             .map_err(|error| anyhow::anyhow!("initial policy reconciliation failed: {error}"))?;
+        record_diagnostic(diagnostic_path.as_deref(), "building async runtime");
         report_start_pending(status_handle, 6)?;
         let runtime = Builder::new_multi_thread().enable_all().build()?;
+        record_diagnostic(diagnostic_path.as_deref(), "creating secured named pipe");
         report_start_pending(status_handle, 7)?;
         let listener = runtime
             .block_on(pipe::prepare(&owner_sid, &service_sid))
@@ -327,6 +392,20 @@ mod windows_service_host {
             let arguments = vec![OsString::from("--owner-sid"), OsString::from("S-1-5-21-1")];
 
             assert_eq!(strip_service_name_argument(arguments.clone()), arguments);
+        }
+
+        #[test]
+        fn reads_diagnostics_path_after_dispatcher_service_name() {
+            let arguments = vec![
+                OsString::from(SERVICE_NAME),
+                OsString::from("--diagnostics-file"),
+                OsString::from("C:\\temp\\service.log"),
+            ];
+
+            assert_eq!(
+                diagnostics_path_from_arguments(&arguments),
+                Some(PathBuf::from("C:\\temp\\service.log"))
+            );
         }
     }
 }

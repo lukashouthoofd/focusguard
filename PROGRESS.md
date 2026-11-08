@@ -109,3 +109,9 @@ The public repository was created at <https://github.com/lukashouthoofd/focusgua
 - Created the public repository and added project guidance adapted from the four principles in [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills/blob/main/CLAUDE.md), with attribution in `AGENTS.md`.
 - Established the project direction: use the MIT Focuser baseline for its broad rules, schedule, allowance, UI, and extension features, then make Windows enforcement service-owned before claiming reliability.
 - Read the PublikHQ setup guide and recorded its approval requirement. No listing was submitted.
+
+## 2026-11-08 - SCM startup failure diagnostics
+
+- Focused GitHub Windows run `42490758303` still failed: `FocusGuardService` exited before reaching `Running`, while SCM exposed only generic Win32 exit code 1 and the runner saw no startup checkpoint. The temporary database/hosts fixture remained isolated under `RUNNER_TEMP`.
+- Added an opt-in `--diagnostics-file` service option. The hosted SCM smoke test records service entry and each startup phase, prints the concrete startup error immediately if SCM reports `Stopped`, and still does not touch the machine hosts file. This is diagnostic instrumentation; it is not enforcement hardening.
+- `cargo test -p focuser-service --locked` passed (13 library and 17 Windows binary tests), the service and SCM probe built, strict service Clippy passed, and the PowerShell smoke script parsed. These are local checks; the updated service startup and crash/restart behavior need a fresh hosted Windows run before the SCM path is considered verified.

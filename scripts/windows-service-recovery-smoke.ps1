@@ -19,6 +19,7 @@ $runnerTemp = (Resolve-Path $env:RUNNER_TEMP).Path.TrimEnd('\')
 $testRoot = Join-Path $runnerTemp ("focusguard-scm-recovery-" + [guid]::NewGuid().ToString('N'))
 $databasePath = Join-Path $testRoot 'policy.db'
 $hostsPath = Join-Path $testRoot 'hosts.fixture'
+$diagnosticsPath = Join-Path $testRoot 'service-startup.log'
 $realHostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
 $testDomain = 'focuser-scm-recovery.invalid'
 $createdService = $false
@@ -43,6 +44,14 @@ function Wait-ServiceRunning([uint32] $PreviousPid = 0) {
             $service.CheckPoint -ne $lastCheckpoint) {
             $lastCheckpoint = $service.CheckPoint
             Write-Host "SCM startup checkpoint $lastCheckpoint (wait hint: $($service.WaitHint) ms)."
+        }
+        if ($null -ne $service -and $service.State -eq 'Stopped') {
+            Write-Host "Service stopped during startup (Win32 exit $($service.ExitCode), service exit $($service.ServiceSpecificExitCode))."
+            if (Test-Path $diagnosticsPath) {
+                Get-Content -LiteralPath $diagnosticsPath | Out-Host
+            }
+            & sc.exe queryex $serviceName | Out-Host
+            throw "$serviceName stopped before reaching Running."
         }
         if ($null -ne $service -and $service.State -eq 'Running' -and
             $service.ProcessId -gt 0 -and
@@ -131,8 +140,8 @@ try {
     Set-Content -Path $hostsPath -Value "# FocusGuard CI hosts fixture`r`n" -NoNewline -Encoding ascii
 
     $ownerSid = $identity.User.Value
-    $imagePath = '"{0}" --owner-sid {1} --database "{2}" --hosts-file "{3}"' -f `
-        $serviceExe, $ownerSid, $databasePath, $hostsPath
+    $imagePath = '"{0}" --owner-sid {1} --database "{2}" --hosts-file "{3}" --diagnostics-file "{4}"' -f `
+        $serviceExe, $ownerSid, $databasePath, $hostsPath, $diagnosticsPath
     Invoke-Checked 'sc.exe' @('create', $serviceName, 'binPath=', $imagePath, 'start=', 'demand', 'obj=', 'LocalSystem')
     $createdService = $true
     Invoke-Checked 'sc.exe' @('sidtype', $serviceName, 'unrestricted')
