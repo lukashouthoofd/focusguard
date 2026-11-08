@@ -275,6 +275,15 @@ jobs:
           New-Item -ItemType Directory -Force crates/focuser-ui/binaries | Out-Null
           Copy-Item target/release/focuser-cli.exe "crates/focuser-ui/binaries/focuser-cli-$targetTriple.exe"
 
+      - name: Stage Windows enforcement resources
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p focuser-service --bin focusguard-service
+          cargo build --locked --release -p focuser-native
+          New-Item -ItemType Directory -Force crates/focuser-ui/resources | Out-Null
+          Copy-Item target/release/focusguard-service.exe crates/focuser-ui/resources/focusguard-service.exe
+          Copy-Item target/release/focuser-native.exe crates/focuser-ui/resources/focuser-native.exe
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version 2.10.1
 
