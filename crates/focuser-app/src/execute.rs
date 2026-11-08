@@ -1885,16 +1885,23 @@ mod tests {
 
     fn scheduled_list(ctx: &AppContext, lock: Option<LockSetup>) -> BlockList {
         use chrono::Datelike;
+        scheduled_list_for_days(ctx, lock, vec![chrono::Local::now().weekday()])
+    }
+
+    fn scheduled_list_for_days(
+        ctx: &AppContext,
+        lock: Option<LockSetup>,
+        days: Vec<chrono::Weekday>,
+    ) -> BlockList {
         let mut list = create(ctx, "Scheduled");
         list.schedule = Some(Schedule {
             id: focuser_common::types::new_id(),
-            name: "Today".into(),
+            name: "Test window".into(),
             enabled: true,
-            time_slots: vec![TimeSlot::new(
-                chrono::Local::now().weekday(),
-                chrono::NaiveTime::MIN,
-                chrono::NaiveTime::MIN,
-            )],
+            time_slots: days
+                .into_iter()
+                .map(|day| TimeSlot::new(day, chrono::NaiveTime::MIN, chrono::NaiveTime::MIN))
+                .collect(),
         });
         execute(
             ctx,
@@ -1937,11 +1944,16 @@ mod tests {
     #[test]
     fn shared_allowance_configuration_is_guarded_but_consumption_never_unlocks() {
         let ctx = ctx();
-        let list = scheduled_list(
+        use chrono::Datelike;
+        let today = chrono::Local::now().weekday();
+        // Include the preceding day so the 20-second synthetic activity interval
+        // remains inside the schedule even when CI runs exactly at local midnight.
+        let list = scheduled_list_for_days(
             &ctx,
             Some(LockSetup::Password {
                 password: "secret".into(),
             }),
+            vec![today.pred(), today],
         );
         for minutes in [Some(30), Some(15), None] {
             assert!(
