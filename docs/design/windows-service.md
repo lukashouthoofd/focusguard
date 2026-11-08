@@ -20,6 +20,7 @@ The database move requires a versioned migration from the current per-user app d
 ## Local IPC boundary
 
 - Use a local named pipe with remote clients rejected. The pipe DACL should grant access only to the service, administrators, and the configured interactive user's SID; verify the caller token on each connection rather than trusting a pipe name.
+- Supply an explicit pipe security descriptor. Microsoft documents that a default named-pipe DACL grants read access to Everyone and the anonymous account. Where the product must isolate terminal sessions, include the active logon SID in the authorization decision; a user SID alone spans that user's sessions. Reject remote clients at pipe creation and claim the first pipe instance to prevent remote access and pipe-name squatting.
 - Use a versioned, length-prefixed typed protocol with a strict maximum message size, request timeout, and bounded connection count. Reuse the existing `Command`/`CommandResult` only after reviewing each command's privilege and lock semantics. Never expose arbitrary SQL, filesystem paths, shell commands, or a service-stop command.
 - Every client request is untrusted. The service checks persisted lock state and validates fields before committing a transaction. It commits durable state before applying external effects, then reports both policy and enforcement status to the UI.
 - Browser HTTP and UI pipe requests converge on the same service-side command layer. The browser endpoint cannot be a second policy implementation.
@@ -65,5 +66,7 @@ This design aims to keep enforcement alive and make casual bypass harder for a s
 
 - [Windows Services](https://learn.microsoft.com/en-us/windows/win32/services/about-services)
 - [Service security and access rights](https://learn.microsoft.com/en-us/windows/win32/services/service-security-and-access-rights)
+- [Named pipe security and access rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+- [Impersonating a named pipe client](https://learn.microsoft.com/en-us/windows/win32/ipc/impersonating-a-named-pipe-client)
 - [Windows Filtering Platform overview](https://learn.microsoft.com/en-us/windows/win32/fwp/about-windows-filtering-platform)
 - [WFP basic operation](https://learn.microsoft.com/en-us/windows/win32/fwp/basic-operation)
