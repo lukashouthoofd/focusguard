@@ -21,17 +21,30 @@ export const POLL_INTERVAL_MS = 2_000;
 
 type NativePort = ReturnType<typeof browser.runtime.connectNative>;
 let nativePort: NativePort | null = null;
-let pendingNativeRules:
-  | { resolve: (rules: RuleSet | null) => void; timeout: ReturnType<typeof setTimeout> }
-  | null = null;
+type NativeExpectedType = "RuleUpdate" | "Event";
+type NativeReply = { msg_type?: unknown; payload?: unknown; request_id?: unknown };
+type PendingNativeRequest = {
+  expected: NativeExpectedType;
+  resolve: (reply: NativeReply | null) => void;
+  timeout: ReturnType<typeof setTimeout>;
+  port: NativePort;
+};
+const pendingNativeRequests = new Map<number, PendingNativeRequest>();
+let nextNativeRequestId = 1;
 let nativeRulesRequest: Promise<RuleSet | null> | null = null;
 
-function settleNativeRules(rules: RuleSet | null): void {
-  const pending = pendingNativeRules;
+function settleNativeRequest(requestId: number, reply: NativeReply | null): void {
+  const pending = pendingNativeRequests.get(requestId);
   if (!pending) return;
-  pendingNativeRules = null;
+  pendingNativeRequests.delete(requestId);
   clearTimeout(pending.timeout);
-  pending.resolve(rules);
+  pending.resolve(reply);
+}
+
+function settlePortRequests(port: NativePort): void {
+  for (const [requestId, pending] of pendingNativeRequests) {
+    if (pending.port === port) settleNativeRequest(requestId, null);
+  }
 }
 
 function ensureNativePort(): NativePort {
@@ -41,23 +54,61 @@ function ensureNativePort(): NativePort {
   port.onMessage.addListener((message: unknown) => {
     if (nativePort !== port) return;
     if (!message || typeof message !== "object") {
-      settleNativeRules(null);
       return;
     }
-    const response = message as { msg_type?: unknown; payload?: unknown };
-    if (response.msg_type === "RuleUpdate" && isRuleSet(response.payload)) {
-      settleNativeRules(response.payload);
-    } else {
-      settleNativeRules(null);
-    }
+    const response = message as NativeReply;
+    if (!Number.isSafeInteger(response.request_id)) return;
+    const requestId = response.request_id as number;
+    const pending = pendingNativeRequests.get(requestId);
+    if (!pending) return;
+    if (response.msg_type === "Error" || response.msg_type !== pending.expected)
+      settleNativeRequest(requestId, null);
+    else settleNativeRequest(requestId, response);
   });
   port.onDisconnect.addListener(() => {
     if (nativePort === port) {
       nativePort = null;
-      settleNativeRules(null);
+      settlePortRequests(port);
     }
   });
   return port;
+}
+
+function requestNativeMessage(
+  expected: NativeExpectedType,
+  payload: unknown,
+  timeoutMs = 5_000,
+): Promise<NativeReply | null> {
+  return new Promise((resolve) => {
+    let port: NativePort;
+    try {
+      port = ensureNativePort();
+    } catch {
+      resolve(null);
+      return;
+    }
+    const requestId = nextNativeRequestId++;
+    if (!Number.isSafeInteger(nextNativeRequestId)) nextNativeRequestId = 1;
+    const pending: PendingNativeRequest = {
+      expected,
+      resolve,
+      port,
+      timeout: setTimeout(() => {
+        settleNativeRequest(requestId, null);
+        if (nativePort === port) {
+          nativePort = null;
+          settlePortRequests(port);
+          port.disconnect();
+        }
+      }, timeoutMs),
+    };
+    pendingNativeRequests.set(requestId, pending);
+    try {
+      port.postMessage({ msg_type: expected, payload, request_id: requestId });
+    } catch {
+      settleNativeRequest(requestId, null);
+    }
+  });
 }
 
 function isRuleSet(value: unknown): value is RuleSet {
@@ -74,25 +125,10 @@ function isRuleSet(value: unknown): value is RuleSet {
 
 function fetchNativeRules(): Promise<RuleSet | null> {
   if (nativeRulesRequest) return nativeRulesRequest;
-  nativeRulesRequest = new Promise<RuleSet | null>((resolve) => {
-    try {
-      const port = ensureNativePort();
-      const pending = {
-        resolve,
-        timeout: setTimeout(() => {
-          if (pendingNativeRules?.resolve !== resolve) return;
-          settleNativeRules(null);
-          // Drop the host so a late reply cannot be mistaken for the next
-          // poll's response.
-          port.disconnect();
-        }, 5_000),
-      };
-      pendingNativeRules = pending;
-      port.postMessage({ msg_type: "RuleUpdate", payload: null });
-    } catch {
-      if (pendingNativeRules?.resolve === resolve) settleNativeRules(null);
-      else resolve(null);
-    }
+  nativeRulesRequest = requestNativeMessage("RuleUpdate", null).then((response) => {
+    if (response?.msg_type === "RuleUpdate" && isRuleSet(response.payload))
+      return response.payload;
+    return null;
   }).finally(() => {
     nativeRulesRequest = null;
   });
@@ -149,6 +185,16 @@ export async function sendHeartbeat(
   incognitoAllowed: boolean | null = null,
   profile = "",
 ): Promise<void> {
+  if (profile) {
+    const response = await requestNativeMessage("Event", {
+      kind: "heartbeat",
+      browser,
+      profile_id: profile,
+      incognito_allowed: incognitoAllowed,
+    });
+    if (response?.msg_type === "Event") return;
+  }
+
   const answer =
     incognitoAllowed === null
       ? ""
@@ -268,6 +314,18 @@ export async function sendAllowanceTick(
   url?: string,
   sharedOnly = false,
 ): Promise<void> {
+  const profile = await profileId();
+  if (profile) {
+    const response = await requestNativeMessage("Event", {
+      kind: sharedOnly ? "shared_activity_tick" : "allowance_tick",
+      browser: detectBrowser(),
+      profile_id: profile,
+      hostname,
+      url: url ?? null,
+    });
+    if (response?.msg_type === "Event") return;
+  }
+
   try {
     await fetch(`${API_BASE}/api/allowance-tick`, {
       method: "POST",

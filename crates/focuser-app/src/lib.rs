@@ -19,4 +19,4 @@ pub mod protocol;
 pub use command::{Command, CommandResult};
 pub use context::{AppContext, NoopSync, PomodoroEvent, SystemSync};
 pub use error::{CommandError, CommandErrorPayload, CommandOutcome};
-pub use execute::execute;
+pub use execute::{execute, execute_in_session};

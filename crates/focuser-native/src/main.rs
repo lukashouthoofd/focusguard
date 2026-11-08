@@ -15,7 +15,7 @@ use std::io::{self, Read, Write};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use focuser_common::extension::{NativeMessage, NativeMessageType};
+use focuser_common::extension::{ExtensionServiceEvent, NativeMessage, NativeMessageType};
 use tracing::{debug, error, info};
 
 #[derive(Parser)]
@@ -98,26 +98,48 @@ async fn run_native_host() -> Result<()> {
             NativeMessageType::Ping => NativeMessage {
                 msg_type: NativeMessageType::Pong,
                 payload: serde_json::Value::Null,
+                request_id: msg.request_id,
             },
-            NativeMessageType::Event => NativeMessage {
-                msg_type: NativeMessageType::Error,
-                payload: serde_json::Value::String(
-                    "extension event forwarding is not available yet".into(),
-                ),
-            },
+            NativeMessageType::Event => {
+                let event = serde_json::from_value::<ExtensionServiceEvent>(msg.payload.clone());
+                match event {
+                    Ok(event) => match ipc_client::send_extension_event(event).await {
+                        Ok(()) => NativeMessage {
+                            msg_type: NativeMessageType::Event,
+                            payload: serde_json::json!({"ok": true}),
+                            request_id: msg.request_id,
+                        },
+                        Err(error) => NativeMessage {
+                            msg_type: NativeMessageType::Error,
+                            payload: serde_json::Value::String(error.to_string()),
+                            request_id: msg.request_id,
+                        },
+                    },
+                    Err(error) => NativeMessage {
+                        msg_type: NativeMessageType::Error,
+                        payload: serde_json::Value::String(format!(
+                            "invalid extension event: {error}"
+                        )),
+                        request_id: msg.request_id,
+                    },
+                }
+            }
             NativeMessageType::RuleUpdate => match ipc_client::get_extension_rules().await {
                 Ok(rules) => NativeMessage {
                     msg_type: NativeMessageType::RuleUpdate,
                     payload: serde_json::to_value(&rules).unwrap_or(serde_json::Value::Null),
+                    request_id: msg.request_id,
                 },
                 Err(e) => NativeMessage {
                     msg_type: NativeMessageType::Error,
                     payload: serde_json::Value::String(e.to_string()),
+                    request_id: msg.request_id,
                 },
             },
             _ => NativeMessage {
                 msg_type: NativeMessageType::Pong,
                 payload: serde_json::Value::Null,
+                request_id: msg.request_id,
             },
         };
 

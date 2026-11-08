@@ -4,8 +4,13 @@
 //! all drive the same engine through the same handle instead of each opening
 //! their own `BlockEngine`.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
+use focuser_common::allowance::AllowanceTick;
 use focuser_core::BlockEngine;
 use focuser_core::allowance::AllowanceTracker;
 
@@ -73,12 +78,173 @@ impl SystemSync for NoopSync {
     }
 }
 
+const EXTENSION_HEARTBEAT_TTL: Duration = Duration::from_secs(120);
+const INCOGNITO_PERMISSION_TTL: Duration = Duration::from_secs(180);
+const MIN_EXTENSION_TICK_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_EXTENSION_TICK_CREDIT: Duration = Duration::from_secs(60);
+const MAX_EXTENSION_PROFILES_PER_BROWSER: usize = 16;
+
+#[derive(Clone)]
+struct ProfileHeartbeat {
+    last_seen: Instant,
+    permission_report: Option<(Instant, bool)>,
+    last_tick: Option<(String, Option<String>, Instant)>,
+    last_shared_tick: Option<(String, Option<String>, Instant)>,
+}
+
+struct ExtensionTickSample<'a> {
+    session_id: Option<u32>,
+    browser: &'a str,
+    profile_id: &'a str,
+    hostname: &'a str,
+    url: Option<&'a str>,
+    shared_activity: bool,
+}
+
+#[derive(Default)]
+struct ExtensionPresence {
+    sessions: HashMap<Option<u32>, HashMap<String, HashMap<String, ProfileHeartbeat>>>,
+}
+
+impl ExtensionPresence {
+    fn prune(&mut self, now: Instant) {
+        self.sessions.retain(|_, browsers| {
+            browsers.retain(|_, profiles| {
+                profiles.retain(|_, heartbeat| {
+                    now.saturating_duration_since(heartbeat.last_seen) < EXTENSION_HEARTBEAT_TTL
+                });
+                !profiles.is_empty()
+            });
+            !browsers.is_empty()
+        });
+    }
+
+    fn record_heartbeat(
+        &mut self,
+        session_id: Option<u32>,
+        browser: &str,
+        profile_id: &str,
+        incognito_allowed: Option<bool>,
+        now: Instant,
+    ) -> bool {
+        self.prune(now);
+        let profiles = self
+            .sessions
+            .entry(session_id)
+            .or_default()
+            .entry(browser.to_string())
+            .or_default();
+        if !profiles.contains_key(profile_id)
+            && profiles.len() >= MAX_EXTENSION_PROFILES_PER_BROWSER
+        {
+            return false;
+        }
+        let heartbeat = profiles
+            .entry(profile_id.to_string())
+            .or_insert(ProfileHeartbeat {
+                last_seen: now,
+                permission_report: None,
+                last_tick: None,
+                last_shared_tick: None,
+            });
+        heartbeat.last_seen = now;
+        if let Some(allowed) = incognito_allowed {
+            heartbeat.permission_report = Some((now, allowed));
+        }
+        true
+    }
+
+    fn record_tick(
+        &mut self,
+        sample: ExtensionTickSample<'_>,
+        now: Instant,
+    ) -> Option<AllowanceTick> {
+        self.prune(now);
+        let heartbeat = self
+            .sessions
+            .get_mut(&sample.session_id)
+            .and_then(|browsers| browsers.get_mut(sample.browser))
+            .and_then(|profiles| profiles.get_mut(sample.profile_id))?;
+        let previous_tick = if sample.shared_activity {
+            &mut heartbeat.last_shared_tick
+        } else {
+            &mut heartbeat.last_tick
+        };
+        let previous = previous_tick.clone();
+        if let Some((previous_hostname, previous_url, previous_at)) = previous {
+            let elapsed = now.saturating_duration_since(previous_at);
+            if elapsed < MIN_EXTENSION_TICK_INTERVAL {
+                return None;
+            }
+            heartbeat.last_seen = now;
+            *previous_tick = Some((
+                sample.hostname.to_string(),
+                sample.url.map(str::to_string),
+                now,
+            ));
+            return Some(AllowanceTick {
+                url: previous_url,
+                shared_active: sample.shared_activity,
+                shared_only: sample.shared_activity,
+                hostname: Some(previous_hostname),
+                app_exe: None,
+                active: true,
+                source: "native-extension".into(),
+                increment_secs: Some(
+                    elapsed.as_secs().min(MAX_EXTENSION_TICK_CREDIT.as_secs()) as u32
+                ),
+            });
+        }
+        heartbeat.last_seen = now;
+        *previous_tick = Some((
+            sample.hostname.to_string(),
+            sample.url.map(str::to_string),
+            now,
+        ));
+        None
+    }
+
+    fn connected_browsers(&mut self, session_id: Option<u32>, now: Instant) -> Vec<String> {
+        self.prune(now);
+        let mut browsers: Vec<_> = self
+            .sessions
+            .get(&session_id)
+            .into_iter()
+            .flat_map(|browsers| browsers.keys().cloned())
+            .collect();
+        browsers.sort();
+        browsers
+    }
+
+    fn safely_connected_browsers(&mut self, session_id: Option<u32>, now: Instant) -> Vec<String> {
+        self.prune(now);
+        let mut browsers: Vec<_> = self
+            .sessions
+            .get(&session_id)
+            .into_iter()
+            .flat_map(|browsers| browsers.iter())
+            .filter(|(_, profiles)| {
+                !profiles.is_empty()
+                    && profiles.values().all(|heartbeat| {
+                        !heartbeat.permission_report.is_some_and(|(at, allowed)| {
+                            !allowed && now.saturating_duration_since(at) < INCOGNITO_PERMISSION_TTL
+                        })
+                    })
+            })
+            .map(|(browser, _)| browser.clone())
+            .collect();
+        browsers.sort();
+        browsers
+    }
+}
+
 /// Everything a command needs in order to run.
 pub struct AppContext {
     pub engine: Mutex<BlockEngine>,
     pub allowance_tracker: AllowanceTracker,
     pomodoro_events: Mutex<Vec<PomodoroEvent>>,
     system: Arc<dyn SystemSync>,
+    extension_presence: Mutex<ExtensionPresence>,
     last_hosts_sync_error: Mutex<Option<String>>,
 }
 
@@ -90,6 +256,7 @@ impl AppContext {
             allowance_tracker: AllowanceTracker::new(),
             pomodoro_events: Mutex::new(Vec::new()),
             system,
+            extension_presence: Mutex::new(ExtensionPresence::default()),
             last_hosts_sync_error: Mutex::new(None),
         }
     }
@@ -136,11 +303,110 @@ impl AppContext {
     }
 
     pub fn connected_browsers(&self) -> Vec<String> {
-        self.system.connected_browsers()
+        self.connected_browsers_for_session(None)
+    }
+
+    pub fn connected_browsers_for_session(&self, session_id: Option<u32>) -> Vec<String> {
+        let mut connected = self.system.connected_browsers();
+        if let Ok(mut presence) = self.extension_presence.lock() {
+            for browser in presence.connected_browsers(session_id, Instant::now()) {
+                if !connected.contains(&browser) {
+                    connected.push(browser);
+                }
+            }
+        }
+        connected
     }
 
     pub fn safely_connected_browsers(&self) -> Vec<String> {
-        self.system.safely_connected_browsers()
+        self.safely_connected_browsers_for_session(None)
+    }
+
+    pub fn safely_connected_browsers_for_session(&self, session_id: Option<u32>) -> Vec<String> {
+        let mut safely_connected = self.system.safely_connected_browsers();
+        if let Ok(mut presence) = self.extension_presence.lock() {
+            for browser in presence.safely_connected_browsers(session_id, Instant::now()) {
+                if !safely_connected.contains(&browser) {
+                    safely_connected.push(browser);
+                }
+            }
+        }
+        safely_connected
+    }
+
+    pub fn record_extension_heartbeat(
+        &self,
+        session_id: Option<u32>,
+        browser: &str,
+        profile_id: &str,
+        incognito_allowed: Option<bool>,
+    ) -> bool {
+        self.extension_presence.lock().is_ok_and(|mut presence| {
+            presence.record_heartbeat(
+                session_id,
+                browser,
+                profile_id,
+                incognito_allowed,
+                Instant::now(),
+            )
+        })
+    }
+
+    pub fn extension_profile_connected(
+        &self,
+        session_id: Option<u32>,
+        browser: &str,
+        profile_id: &str,
+    ) -> bool {
+        self.extension_presence.lock().is_ok_and(|mut presence| {
+            presence.prune(Instant::now());
+            presence
+                .sessions
+                .get(&session_id)
+                .and_then(|browsers| browsers.get(browser))
+                .is_some_and(|profiles| profiles.contains_key(profile_id))
+        })
+    }
+
+    /// Credit a profile's active-tab stream using service-measured elapsed
+    /// time. Normal and shared-activity streams keep independent baselines.
+    pub fn record_extension_tick(
+        &self,
+        session_id: Option<u32>,
+        browser: &str,
+        profile_id: &str,
+        hostname: &str,
+        url: Option<&str>,
+        shared_activity: bool,
+    ) -> Option<AllowanceTick> {
+        self.extension_presence
+            .lock()
+            .ok()
+            .and_then(|mut presence| {
+                presence.record_tick(
+                    ExtensionTickSample {
+                        session_id,
+                        browser,
+                        profile_id,
+                        hostname,
+                        url,
+                        shared_activity,
+                    },
+                    Instant::now(),
+                )
+            })
+    }
+
+    /// Rebuild durable allowance exhaustion before the service begins serving
+    /// browser rule requests after startup.
+    pub fn rebuild_allowance_state(&self) -> Result<(), String> {
+        let engine = self
+            .engine
+            .lock()
+            .map_err(|_| "engine lock poisoned".to_string())?;
+        self.allowance_tracker
+            .rebuild_from_db(engine.db())
+            .map_err(|error| error.to_string())
     }
 
     /// Domains currently exempt from blocking because an allowance still has
@@ -153,7 +419,15 @@ impl AppContext {
     /// start. Refusing it is the safe direction: the site stays blocked and the
     /// UI says why.
     pub fn allowance_exempt_domains(&self, engine: &BlockEngine) -> Vec<String> {
-        if self.connected_browsers().is_empty() {
+        self.allowance_exempt_domains_for_session(engine, None)
+    }
+
+    pub fn allowance_exempt_domains_for_session(
+        &self,
+        engine: &BlockEngine,
+        session_id: Option<u32>,
+    ) -> Vec<String> {
+        if self.connected_browsers_for_session(session_id).is_empty() {
             return Vec::new();
         }
         self.allowance_tracker.active_allowance_domains(engine)
@@ -182,6 +456,164 @@ mod tests {
     fn ctx() -> AppContext {
         let db = Database::open_in_memory().unwrap();
         AppContext::new_headless(BlockEngine::new(db).unwrap())
+    }
+
+    #[test]
+    fn extension_presence_is_session_scoped_and_unknown_permission_is_not_a_gap() {
+        let mut presence = ExtensionPresence::default();
+        let start = Instant::now();
+        presence.record_heartbeat(None, "Chrome", "p1", None, start);
+        assert_eq!(presence.connected_browsers(None, start), ["Chrome"]);
+        assert_eq!(
+            presence.connected_browsers(Some(4), start),
+            Vec::<String>::new()
+        );
+        assert_eq!(presence.safely_connected_browsers(None, start), ["Chrome"]);
+
+        presence.record_heartbeat(Some(4), "Chrome", "p2", Some(false), start);
+        assert!(
+            presence
+                .safely_connected_browsers(Some(4), start)
+                .is_empty()
+        );
+        // A heartbeat with no new permission answer must not renew the old no.
+        presence.record_heartbeat(
+            Some(4),
+            "Chrome",
+            "p2",
+            None,
+            start + Duration::from_secs(100),
+        );
+        assert!(
+            presence
+                .safely_connected_browsers(Some(4), start + Duration::from_secs(100))
+                .is_empty()
+        );
+        assert_eq!(
+            presence.safely_connected_browsers(Some(4), start + Duration::from_secs(181)),
+            ["Chrome"]
+        );
+    }
+
+    #[test]
+    fn extension_profile_cap_never_evicts_a_live_profile() {
+        let mut presence = ExtensionPresence::default();
+        let start = Instant::now();
+        for index in 0..MAX_EXTENSION_PROFILES_PER_BROWSER {
+            presence.record_heartbeat(
+                Some(1),
+                "Chrome",
+                &format!("profile-{index}"),
+                Some(false),
+                start + Duration::from_secs(index as u64),
+            );
+        }
+        presence.record_heartbeat(
+            Some(1),
+            "Chrome",
+            "profile-overflow",
+            Some(true),
+            start + Duration::from_secs(30),
+        );
+        let profiles = &presence.sessions[&Some(1)]["Chrome"];
+        assert_eq!(profiles.len(), MAX_EXTENSION_PROFILES_PER_BROWSER);
+        assert!(profiles.contains_key("profile-0"));
+        assert!(!profiles.contains_key("profile-overflow"));
+        assert!(
+            presence
+                .safely_connected_browsers(Some(1), start + Duration::from_secs(30))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_allowance_ticks_use_server_elapsed_time_and_separate_streams() {
+        fn tick(
+            presence: &mut ExtensionPresence,
+            session_id: Option<u32>,
+            hostname: &str,
+            url: Option<&str>,
+            shared_activity: bool,
+            now: Instant,
+        ) -> Option<AllowanceTick> {
+            presence.record_tick(
+                ExtensionTickSample {
+                    session_id,
+                    browser: "Firefox",
+                    profile_id: "p1",
+                    hostname,
+                    url,
+                    shared_activity,
+                },
+                now,
+            )
+        }
+
+        let mut presence = ExtensionPresence::default();
+        let start = Instant::now();
+        presence.record_heartbeat(Some(9), "Firefox", "p1", Some(true), start);
+        assert!(
+            tick(
+                &mut presence,
+                Some(9),
+                "first.example",
+                Some("https://first.example/a"),
+                false,
+                start
+            )
+            .is_none()
+        );
+        assert!(tick(&mut presence, Some(9), "shared.example", None, true, start).is_none());
+
+        let normal = tick(
+            &mut presence,
+            Some(9),
+            "second.example",
+            Some("https://second.example/b"),
+            false,
+            start + Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(normal.hostname.as_deref(), Some("first.example"));
+        assert_eq!(normal.url.as_deref(), Some("https://first.example/a"));
+        assert_eq!(normal.increment_secs, Some(2));
+        assert!(!normal.shared_only);
+
+        let shared = tick(
+            &mut presence,
+            Some(9),
+            "shared.example",
+            Some("https://shared.example/"),
+            true,
+            start + Duration::from_secs(3),
+        )
+        .unwrap();
+        assert_eq!(shared.hostname.as_deref(), Some("shared.example"));
+        assert_eq!(shared.increment_secs, Some(3));
+        assert!(shared.shared_active && shared.shared_only);
+
+        assert!(
+            tick(
+                &mut presence,
+                Some(9),
+                "other.example",
+                None,
+                false,
+                start + Duration::from_millis(2500)
+            )
+            .is_none()
+        );
+        let capped = tick(
+            &mut presence,
+            Some(9),
+            "third.example",
+            None,
+            false,
+            start + Duration::from_secs(100),
+        )
+        .unwrap();
+        assert_eq!(capped.increment_secs, Some(60));
+        assert!(tick(&mut presence, Some(4), "first.example", None, false, start).is_none());
     }
 
     #[test]

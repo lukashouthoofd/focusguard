@@ -32,7 +32,7 @@ use windows_sys::{
         Security::{
             CheckTokenMembership, DuplicateTokenEx, GetTokenInformation, LookupAccountNameW,
             RevertToSelf, SECURITY_ATTRIBUTES, SecurityImpersonation, TOKEN_DUPLICATE, TOKEN_QUERY,
-            TOKEN_USER, TokenImpersonation, TokenUser,
+            TOKEN_USER, TokenImpersonation, TokenSessionId, TokenUser,
         },
         Storage::FileSystem::{
             FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_READ_ATTRIBUTES,
@@ -147,7 +147,7 @@ async fn handle_connection(
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "request frame deadline elapsed"))??;
 
-    let peer_sid = impersonated_client_sid(pipe.as_raw_handle() as HANDLE)?;
+    let (peer_sid, peer_session_id) = impersonated_client_identity(pipe.as_raw_handle() as HANDLE)?;
     if peer_sid != owner_sid {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -158,7 +158,7 @@ async fn handle_connection(
     let response = if matches!(&request.command, Command::AppVersion)
         || (policy_enabled && service_policy_command_allowed(&request.command))
     {
-        protocol::dispatch_service_request(context, request)
+        protocol::dispatch_service_request_in_session(context, request, Some(peer_session_id))
     } else {
         ResponseEnvelope::new(
             request.request_id,
@@ -210,6 +210,9 @@ fn service_policy_command_allowed(command: &Command) -> bool {
             | Command::UpdateSchedule { .. }
             | Command::GetBlockingHealth
             | Command::GetExtensionRules
+            | Command::ExtensionHeartbeat { .. }
+            | Command::RecordExtensionAllowanceTick { .. }
+            | Command::RecordExtensionSharedActivityTick { .. }
             | Command::ApplyBlocks
     )
 }
@@ -300,7 +303,7 @@ pub fn validate_sid(sid: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn impersonated_client_sid(pipe: HANDLE) -> io::Result<String> {
+fn impersonated_client_identity(pipe: HANDLE) -> io::Result<(String, u32)> {
     // Keep impersonation off Tokio's reusable worker threads. If reverting the
     // token fails, panic only this dedicated thread so its impersonation token
     // cannot leak into unrelated work on a pooled executor thread.
@@ -316,7 +319,9 @@ fn impersonated_client_sid(pipe: HANDLE) -> io::Result<String> {
                 Err(io::Error::last_os_error())
             } else {
                 let token = OwnedHandle(token);
-                token_user_sid(token.0)
+                let sid = token_user_sid(token.0)?;
+                let session_id = token_session_id(token.0)?;
+                Ok((sid, session_id))
             }
         };
         if unsafe { RevertToSelf() } == 0 {
@@ -359,6 +364,24 @@ unsafe fn token_user_sid(token: HANDLE) -> io::Result<String> {
     }
     let token_user = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
     sid_to_string(token_user.User.Sid)
+}
+
+unsafe fn token_session_id(token: HANDLE) -> io::Result<u32> {
+    let mut session_id = 0u32;
+    let mut required = 0u32;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenSessionId,
+            (&mut session_id as *mut u32).cast(),
+            size_of::<u32>() as u32,
+            &mut required,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(session_id)
 }
 
 fn sid_to_string(sid: *mut c_void) -> io::Result<String> {

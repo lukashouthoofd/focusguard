@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::{AppContext, Command, CommandErrorPayload, CommandResult, execute};
+use crate::{AppContext, Command, CommandErrorPayload, CommandResult, execute_in_session};
 
 /// Version of the serialized service protocol.
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -191,6 +191,16 @@ pub fn dispatch_service_request(
     context: &AppContext,
     request: RequestEnvelope,
 ) -> ResponseEnvelope {
+    dispatch_service_request_in_session(context, request, None)
+}
+
+/// Service-pipe variant that receives the session ID from the authenticated
+/// impersonation token. This value is never read from the wire request.
+pub fn dispatch_service_request_in_session(
+    context: &AppContext,
+    request: RequestEnvelope,
+    session_id: Option<u32>,
+) -> ResponseEnvelope {
     let result = if request.version != PROTOCOL_VERSION {
         Err(CommandErrorPayload {
             code: "unsupported_protocol_version".into(),
@@ -202,7 +212,7 @@ pub fn dispatch_service_request(
             message: "This command is only available to the desktop UI.".into(),
         })
     } else {
-        execute(context, request.command).map_err(CommandErrorPayload::from)
+        execute_in_session(context, request.command, session_id).map_err(CommandErrorPayload::from)
     };
     ResponseEnvelope::new(request.request_id, result)
 }
@@ -246,6 +256,9 @@ fn service_command_allowed(command: &Command) -> bool {
             | Command::ResetSettings
             | Command::GetBlockingHealth
             | Command::GetExtensionRules
+            | Command::ExtensionHeartbeat { .. }
+            | Command::RecordExtensionAllowanceTick { .. }
+            | Command::RecordExtensionSharedActivityTick { .. }
             | Command::ApplyBlocks
             | Command::RemoveBlocks
             | Command::PomodoroStatus

@@ -105,12 +105,23 @@ falls back to the desktop app's loopback API when that host is unavailable.
 The host manifest must name the exact Chrome extension ID; wildcard Chrome
 origins are rejected. Firefox uses the fixed `focusguard@publikhq.com` ID.
 
-This is only the rule-read path so far. Heartbeats, block reports, and
-allowance-time reports still use the desktop HTTP API. They do not reach the
-service while the desktop UI is closed, so service-side extension presence,
-statistics, and allowance timing are not yet complete. The extension's
-`nativeMessaging` permission is used for the rule path; it does not grant the
-extension authority to call arbitrary service commands.
+When the Windows service is available, heartbeats and normal/shared allowance
+samples use narrow Native Messaging events through the same service pipe.
+The service ties presence to the Windows session on the authenticated pipe,
+validates the browser/profile/host fields, and derives allowance seconds from
+its own monotonic clock. A first sample only establishes a baseline; each later
+sample credits at most 60 seconds. A service error falls back to the desktop
+HTTP API. Block reports and their visit statistics still use that HTTP API and
+therefore are unavailable while the desktop UI is closed. The extension's
+`nativeMessaging` permission does not authorize arbitrary service commands.
+The service-mode UI and pipe allowlist do not yet expose allowance creation or
+editing, so allowance telemetry is backend support for configured data rather
+than a user-facing service-mode feature.
+
+The pipe confirms the service process to the native host and checks the caller's
+Windows user SID/session. It does not prove the caller is a browser: another
+process running as that user can forge extension telemetry. Presence and
+allowance reports are bounded and must not be described as tamperproof.
 
 ## Privacy
 

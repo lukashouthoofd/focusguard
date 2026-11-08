@@ -1,5 +1,12 @@
 # Progress
 
+## 2026-11-08 — service-backed extension presence and allowances
+
+- Extended the persistent Native Messaging port with request IDs so rules, heartbeats, and allowance events can share one connection. The native host forwards typed heartbeat, normal allowance, and shared-activity events over the SCM-PID-checked pipe; the extension retains its loopback fallback. Block reports and visit statistics remain HTTP-only.
+- Service telemetry validates browser/profile IDs, canonical DNS hostnames, and matching HTTP(S) URLs. Caller Windows session IDs come from the impersonated pipe token, not extension JSON. Presence expires after 120 seconds, recent explicit private-window denial after 180 seconds, and the profile cap rejects overflow without evicting live profiles. Normal/shared streams have independent server-monotonic baselines; first samples earn no time, sub-two-second samples are ignored, and accepted intervals are capped at 60 seconds.
+- Service startup rebuilds durable exhausted-allowance state before accepting rule requests. Tests cover session isolation, unknown and expired private-window reports, profile-cap behavior, separate tick streams, elapsed-time capping, payload validation, rule transport multiplexing, and allowance recovery after restart. `cargo test --workspace --locked --quiet`, extension TypeScript compile, and all five focused native transport tests passed locally. Hosted SCM probe now checks extension presence after service startup/recovery; its updated run is pending.
+- Limits: Native Messaging/pipe transport does not authenticate that a caller is a browser; same-user processes can forge telemetry. The service-mode UI and pipe allowlist do not expose allowance create/edit/reset, so this is not yet a user-facing service-mode quota feature. The service is still not installed by the product installer, and no real browser-to-service test has run locally. The allowance clock remains browser-reported activity bounded by service time, not kernel-observed foreground usage. Do not claim tamperproof or administrator-resistant enforcement.
+
 ## 2026-11-08 — service-backed extension rules
 
 - Added a read-only `GetExtensionRules` command to the authenticated Windows service pipe. It returns the normal compiled extension rules, including lock state and domain category metadata. The Native Messaging host now uses the SCM-PID-checked pipe client instead of the obsolete TCP port.

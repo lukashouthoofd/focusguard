@@ -10,8 +10,8 @@
 //! - Custom block page display
 //! - Active usage time tracking (how long a tab is focused)
 //!
-//! The extension reads compiled rules from the service. Event and usage
-//! reporting over the service connection are not implemented yet.
+//! The extension reads compiled rules and sends bounded heartbeat and
+//! allowance events through Native Messaging to the service.
 //!
 //! ## Architecture
 //!
@@ -233,6 +233,33 @@ pub struct NativeMessage {
     pub msg_type: NativeMessageType,
     /// JSON payload — the actual ExtensionRuleSet, ExtensionEvent, etc.
     pub payload: serde_json::Value,
+    /// Correlates asynchronous replies with requests on one native port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<u64>,
+}
+
+/// Narrow service events accepted from the browser extension over Native
+/// Messaging. The service validates every field again before changing state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExtensionServiceEvent {
+    Heartbeat {
+        browser: String,
+        profile_id: String,
+        incognito_allowed: Option<bool>,
+    },
+    AllowanceTick {
+        browser: String,
+        profile_id: String,
+        hostname: String,
+        url: Option<String>,
+    },
+    SharedActivityTick {
+        browser: String,
+        profile_id: String,
+        hostname: String,
+        url: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Type)]
@@ -285,5 +312,56 @@ impl BlockingCapabilities {
             );
         }
         missing
+    }
+}
+
+#[cfg(test)]
+mod native_message_tests {
+    use super::*;
+
+    #[test]
+    fn native_event_wire_names_are_stable_and_client_flags_are_not_in_the_type() {
+        let heartbeat = serde_json::json!({
+            "kind": "heartbeat",
+            "browser": "Chrome",
+            "profile_id": "00000000-0000-4000-8000-000000000001",
+            "incognito_allowed": true,
+        });
+        assert!(matches!(
+            serde_json::from_value::<ExtensionServiceEvent>(heartbeat).unwrap(),
+            ExtensionServiceEvent::Heartbeat { .. }
+        ));
+
+        let shared_tick = serde_json::json!({
+            "kind": "shared_activity_tick",
+            "browser": "Chrome",
+            "profile_id": "00000000-0000-4000-8000-000000000001",
+            "hostname": "example.com",
+            "url": "https://example.com/",
+            "shared_only": false,
+            "increment_secs": 120,
+        });
+        let ExtensionServiceEvent::SharedActivityTick { hostname, .. } =
+            serde_json::from_value(shared_tick).unwrap()
+        else {
+            panic!("expected the separately typed shared activity event");
+        };
+        assert_eq!(hostname, "example.com");
+    }
+
+    #[test]
+    fn native_replies_correlate_and_older_requests_remain_readable() {
+        let message = NativeMessage {
+            msg_type: NativeMessageType::Event,
+            payload: serde_json::json!({"ok": true}),
+            request_id: Some(42),
+        };
+        let encoded = serde_json::to_vec(&message).unwrap();
+        let decoded: NativeMessage = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.request_id, Some(42));
+
+        let legacy = serde_json::json!({"msg_type": "Ping", "payload": null});
+        let decoded: NativeMessage = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.request_id, None);
     }
 }

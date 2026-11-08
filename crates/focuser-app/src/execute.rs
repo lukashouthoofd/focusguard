@@ -17,12 +17,69 @@ use crate::command::{
 };
 use crate::context::{AppContext, PomodoroEvent};
 use crate::error::{CommandError, CommandOutcome};
+use std::net::IpAddr;
 
 /// Run one command against the shared context.
 pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> {
+    execute_in_session(ctx, cmd, None)
+}
+
+/// Run a command while retaining the authenticated Windows session of a
+/// service-pipe caller. The session ID is supplied by the pipe adapter, never
+/// by the browser extension payload.
+pub fn execute_in_session(
+    ctx: &AppContext,
+    cmd: Command,
+    session_id: Option<u32>,
+) -> CommandOutcome<CommandResult> {
     // Before the lock: reading icons is slow and never touches the engine.
     if let Command::GetAppIcons { targets } = cmd {
         return Ok(CommandResult::AppIcons(app_icons(targets)));
+    }
+
+    if let Command::ExtensionHeartbeat {
+        browser,
+        profile_id,
+        incognito_allowed,
+    } = cmd
+    {
+        validate_extension_identity(&browser, &profile_id)?;
+        let Some(session_id) = session_id else {
+            return Err(CommandError::Validation(
+                "extension telemetry requires an authenticated service session".into(),
+            ));
+        };
+        if !ctx.record_extension_heartbeat(
+            Some(session_id),
+            &browser,
+            &profile_id,
+            incognito_allowed,
+        ) {
+            return Err(CommandError::Validation(
+                "too many active extension profiles for this browser".into(),
+            ));
+        }
+        return Ok(CommandResult::Unit);
+    }
+
+    if let Command::RecordExtensionAllowanceTick {
+        browser,
+        profile_id,
+        hostname,
+        url,
+    } = cmd
+    {
+        return record_extension_tick(ctx, session_id, browser, profile_id, hostname, url, false);
+    }
+
+    if let Command::RecordExtensionSharedActivityTick {
+        browser,
+        profile_id,
+        hostname,
+        url,
+    } = cmd
+    {
+        return record_extension_tick(ctx, session_id, browser, profile_id, hostname, url, true);
     }
 
     let mut engine = ctx
@@ -555,7 +612,7 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
 
             Ok(CommandResult::BlockingHealth(BlockingHealth {
                 active_lists,
-                extension_connected: !ctx.connected_browsers().is_empty(),
+                extension_connected: !ctx.connected_browsers_for_session(session_id).is_empty(),
                 hosts_writable: ctx.hosts_writable(),
                 hosts_sync_error: ctx.hosts_sync_error(),
                 extension_only_rules: engine.has_extension_only_rules(),
@@ -564,7 +621,8 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
         }
 
         Command::GetExtensionRules => {
-            let allowance_exceptions = ctx.allowance_exempt_domains(&engine);
+            let allowance_exceptions =
+                ctx.allowance_exempt_domains_for_session(&engine, session_id);
             let spent_domains: Vec<String> = ctx
                 .allowance_tracker
                 .blocked_domains()
@@ -872,7 +930,141 @@ pub fn execute(ctx: &AppContext, cmd: Command) -> CommandOutcome<CommandResult> 
 
         // Answered above; kept correct rather than `unreachable!`.
         Command::GetAppIcons { targets } => Ok(CommandResult::AppIcons(app_icons(targets))),
+        Command::ExtensionHeartbeat { .. }
+        | Command::RecordExtensionAllowanceTick { .. }
+        | Command::RecordExtensionSharedActivityTick { .. } => {
+            unreachable!("extension telemetry commands return before taking the engine lock")
+        }
     }
+}
+
+fn record_extension_tick(
+    ctx: &AppContext,
+    session_id: Option<u32>,
+    browser: String,
+    profile_id: String,
+    hostname: String,
+    url: Option<String>,
+    shared_activity: bool,
+) -> CommandOutcome<CommandResult> {
+    let Some(session_id) = session_id else {
+        return Err(CommandError::Validation(
+            "extension telemetry requires an authenticated service session".into(),
+        ));
+    };
+    validate_extension_identity(&browser, &profile_id)?;
+    let hostname = validate_extension_hostname(&hostname)?;
+    let url = validate_extension_url(url, &hostname)?;
+    let Some(tick) = ctx.record_extension_tick(
+        Some(session_id),
+        &browser,
+        &profile_id,
+        &hostname,
+        url.as_deref(),
+        shared_activity,
+    ) else {
+        // A first sample establishes a baseline; no client supplied time is
+        // credited until the service has measured a monotonic interval.
+        return Ok(CommandResult::Unit);
+    };
+    let engine = ctx
+        .engine
+        .lock()
+        .map_err(|_| CommandError::Internal("engine lock poisoned".into()))?;
+    ctx.allowance_tracker.ingest_tick(engine.db(), &tick)?;
+    Ok(CommandResult::Unit)
+}
+
+fn validate_extension_identity(browser: &str, profile_id: &str) -> Result<(), CommandError> {
+    if !matches!(browser, "Chrome" | "Firefox" | "Edge" | "Brave" | "Opera") {
+        return Err(CommandError::Validation("unknown browser name".into()));
+    }
+    let profile = uuid::Uuid::parse_str(profile_id)
+        .map_err(|_| CommandError::Validation("invalid browser profile id".into()))?;
+    if profile.to_string() != profile_id {
+        return Err(CommandError::Validation(
+            "browser profile id must be a canonical UUID".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_extension_hostname(hostname: &str) -> Result<String, CommandError> {
+    let host = canonical_host(hostname);
+    let labels: Vec<_> = host.split('.').collect();
+    let valid = host.len() <= 253
+        && labels.len() >= 2
+        && !hostname.is_empty()
+        && hostname.len() <= 253
+        && hostname.trim() == hostname
+        && !hostname.contains(['/', '\\', '@', ':', '?', '#'])
+        && host.parse::<IpAddr>().is_err()
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        });
+    if !valid {
+        return Err(CommandError::Validation(
+            "invalid browser-reported hostname".into(),
+        ));
+    }
+    Ok(host)
+}
+
+fn validate_extension_url(
+    url: Option<String>,
+    expected_hostname: &str,
+) -> Result<Option<String>, CommandError> {
+    let Some(url) = url else {
+        return Ok(None);
+    };
+    let bad = || CommandError::Validation("invalid browser-reported URL".into());
+    if url.len() > 4096
+        || url.chars().any(char::is_control)
+        || url.contains('\\')
+        || url.trim() != url
+    {
+        return Err(bad());
+    }
+    let authority_start = if url.starts_with("https://") {
+        8
+    } else if url.starts_with("http://") {
+        7
+    } else {
+        return Err(bad());
+    };
+    let authority = url[authority_start..]
+        .split(['/', '?', '#'])
+        .next()
+        .ok_or_else(bad)?;
+    if authority.is_empty() || authority.contains('@') {
+        return Err(bad());
+    }
+    let authority_host = match authority.split_once(':') {
+        Some((host, port)) if !host.contains(':') => {
+            if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(bad());
+            }
+            host
+        }
+        Some(_) => return Err(bad()),
+        None => authority,
+    };
+    if validate_extension_hostname(authority_host)? != expected_hostname {
+        return Err(bad());
+    }
+    Ok(Some(url))
 }
 
 /// Deduplicated, and one loader for the batch — on Linux that parses every
@@ -1164,6 +1356,57 @@ mod tests {
     fn ctx() -> AppContext {
         let db = Database::open_in_memory().unwrap();
         AppContext::new_headless(BlockEngine::new(db).unwrap())
+    }
+
+    #[test]
+    fn extension_telemetry_rejects_unknown_browsers_and_untrusted_hosts() {
+        let profile = "00000000-0000-4000-8000-000000000001";
+        assert!(validate_extension_identity("Chrome", profile).is_ok());
+        assert!(validate_extension_identity("Other", profile).is_err());
+        assert!(validate_extension_identity("Chrome", "profile-id").is_err());
+        assert!(
+            execute(
+                &ctx(),
+                Command::ExtensionHeartbeat {
+                    browser: "Chrome".into(),
+                    profile_id: profile.into(),
+                    incognito_allowed: Some(true),
+                }
+            )
+            .is_err()
+        );
+
+        assert_eq!(
+            validate_extension_hostname("www.Example.com").unwrap(),
+            "example.com"
+        );
+        for hostname in [
+            "",
+            "localhost",
+            "127.0.0.1",
+            "example.com/path",
+            "bad..host",
+        ] {
+            assert!(validate_extension_hostname(hostname).is_err(), "{hostname}");
+        }
+        assert!(
+            validate_extension_url(
+                Some("https://example.com:443/path?q=1".into()),
+                "example.com"
+            )
+            .is_ok()
+        );
+        for url in [
+            "file://example.com/a",
+            "https://example.com.evil/a",
+            "https://user@example.com/a",
+            "https://example.com:bad/a",
+        ] {
+            assert!(
+                validate_extension_url(Some(url.into()), "example.com").is_err(),
+                "{url}"
+            );
+        }
     }
 
     /// A context that behaves like a machine with the extension installed.

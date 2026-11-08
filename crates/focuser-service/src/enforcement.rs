@@ -65,10 +65,9 @@ pub fn open_context(
 ) -> io::Result<AppContext> {
     let database = Database::open(database_path).map_err(other_io)?;
     let engine = BlockEngine::new(database).map_err(other_io)?;
-    Ok(AppContext::new(
-        engine,
-        Arc::new(HostsFileSync::new(hosts_path, flush_dns)),
-    ))
+    let context = AppContext::new(engine, Arc::new(HostsFileSync::new(hosts_path, flush_dns)));
+    context.rebuild_allowance_state().map_err(other_io)?;
+    Ok(context)
 }
 
 /// Reload durable schedules and push their current exact-domain set to the
@@ -140,6 +139,7 @@ pub fn flush_system_dns() -> io::Result<()> {
 mod tests {
     use super::*;
     use focuser_app::{Command, execute::execute};
+    use focuser_common::allowance::{Allowance, AllowanceMatch};
     use focuser_common::types::WebsiteMatchType;
     use std::fs;
 
@@ -204,6 +204,38 @@ mod tests {
             .unwrap(),
             focuser_common::hosts_file::HostsSyncOutcome::Unchanged
         );
+    }
+
+    #[test]
+    fn exhausted_allowance_is_rebuilt_before_service_rules_are_requested() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("service.db");
+        let hosts = directory.path().join("hosts");
+        fs::write(&hosts, "127.0.0.1 localhost\n").unwrap();
+        let allowance = Allowance::new(AllowanceMatch::Domain("quota.example".into()), 60, true);
+        {
+            let context = open_context(&database, &hosts, no_flush).unwrap();
+            let engine = context.engine.lock().unwrap();
+            engine.db().create_allowance(&allowance).unwrap();
+            engine
+                .db()
+                .increment_allowance_usage(allowance.id, 60)
+                .unwrap();
+        }
+
+        let context = open_context(&database, &hosts, no_flush).unwrap();
+        assert!(
+            context
+                .allowance_tracker
+                .blocked_domains()
+                .contains(&"quota.example".to_string())
+        );
+        let focuser_app::CommandResult::ExtensionRules(rules) =
+            execute(&context, Command::GetExtensionRules).unwrap()
+        else {
+            panic!("service should return extension rules");
+        };
+        assert!(rules.blocked_domains.contains(&"quota.example".to_string()));
     }
 
     #[test]

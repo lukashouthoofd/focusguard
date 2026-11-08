@@ -357,6 +357,29 @@ export type Command =
 { cmd: "get_blocking_health" } |
 /**  Current compiled rules for the browser extension. */
 { cmd: "get_extension_rules" } |
+/**
+ *  Record that one browser profile's extension is alive and report its
+ *  private-window permission state.
+ */
+{ cmd: "extension_heartbeat"; args: {
+	browser: string,
+	profile_id: string,
+	incognito_allowed: boolean | null,
+} } |
+/**  Ingest one bounded, browser-reported active-tab allowance tick. */
+{ cmd: "record_extension_allowance_tick"; args: {
+	browser: string,
+	profile_id: string,
+	hostname: string,
+	url: string | null,
+} } |
+/**  Ingest an active-tab tick for the shared allowance only. */
+{ cmd: "record_extension_shared_activity_tick"; args: {
+	browser: string,
+	profile_id: string,
+	hostname: string,
+	url: string | null,
+} } |
 /**  Push the current blocked-domain set to the hosts file now. */
 { cmd: "apply_blocks" } |
 /**  Remove FocusGuard's hosts-file entries. */

@@ -225,6 +225,27 @@ pub enum Command {
     GetBlockingHealth,
     /// Current compiled rules for the browser extension.
     GetExtensionRules,
+    /// Record that one browser profile's extension is alive and report its
+    /// private-window permission state.
+    ExtensionHeartbeat {
+        browser: String,
+        profile_id: String,
+        incognito_allowed: Option<bool>,
+    },
+    /// Ingest one bounded, browser-reported active-tab allowance tick.
+    RecordExtensionAllowanceTick {
+        browser: String,
+        profile_id: String,
+        hostname: String,
+        url: Option<String>,
+    },
+    /// Ingest an active-tab tick for the shared allowance only.
+    RecordExtensionSharedActivityTick {
+        browser: String,
+        profile_id: String,
+        hostname: String,
+        url: Option<String>,
+    },
     /// Push the current blocked-domain set to the hosts file now.
     ApplyBlocks,
     /// Remove FocusGuard's hosts-file entries.
