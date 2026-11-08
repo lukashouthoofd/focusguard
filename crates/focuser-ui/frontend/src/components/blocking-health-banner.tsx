@@ -24,16 +24,21 @@ export function BlockingHealthBanner() {
   const [installing, setInstalling] = useState(false);
 
   if (!health.data?.active_lists) return null;
+  const extensionUnavailableForRules =
+    health.data.extension_only_rules && !health.data.extension_connected;
   if (
     health.data.extension_connected ||
-    (health.data.hosts_writable && !health.data.hosts_sync_error)
+    (health.data.hosts_writable && !health.data.hosts_sync_error && !extensionUnavailableForRules)
   ) {
     return null;
   }
 
   // Only Windows has a way to run the app with the rights for the hosts file.
   // Elsewhere that advice would mean running a desktop app as root.
-  const body = hostPlatform() === "windows" ? m.health_body() : m.health_body_extension_only();
+  const body =
+    extensionUnavailableForRules || hostPlatform() !== "windows"
+      ? m.health_body_extension_only()
+      : m.health_body();
 
   return (
     <>

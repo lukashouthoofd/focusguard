@@ -55,6 +55,7 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_SystemInformation"] }
 
 # Which app is in front, and how long the user has been away. Versions match
 # what Tauri already pulls in, so this adds no second copy of objc2.

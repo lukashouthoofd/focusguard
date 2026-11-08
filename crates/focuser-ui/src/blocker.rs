@@ -214,14 +214,15 @@ fn enforcement_settings(db: &focuser_core::db::Database) -> Enforcement {
 /// Apply blocks to the system hosts file.
 pub fn apply_hosts_blocks(domains: &[String]) -> Result<(), String> {
     let path = hosts_path();
-    match hosts_file::sync_path(&path, domains)
-        .map_err(|error| format!("{error}. Run as administrator."))?
-    {
-        HostsSyncOutcome::Updated => {
-            flush_dns();
-            info!(count = domains.len(), "Hosts file updated");
-        }
-        HostsSyncOutcome::Unchanged => {}
+    let outcome = hosts_file::sync_path(&path, domains)
+        .map_err(|error| format!("{error}. Run as administrator."))?;
+    if outcome == HostsSyncOutcome::Updated {
+        HOSTS_DNS_FLUSH_PENDING.store(true, Ordering::Relaxed);
+        info!(count = domains.len(), "Hosts file updated");
+    }
+    if HOSTS_DNS_FLUSH_PENDING.load(Ordering::Relaxed) {
+        flush_dns()?;
+        HOSTS_DNS_FLUSH_PENDING.store(false, Ordering::Relaxed);
     }
     Ok(())
 }
@@ -246,6 +247,8 @@ pub fn hosts_writable() -> bool {
 /// Whether the last hosts write failed. Read by the blocking-health command so
 /// the UI can say that rules are armed but not actually in force.
 static HOSTS_WRITE_FAILED: AtomicBool = AtomicBool::new(false);
+/// Retry a failed cache flush on the next sync even if hosts content is current.
+static HOSTS_DNS_FLUSH_PENDING: AtomicBool = AtomicBool::new(true);
 
 fn sync_hosts_file(state: &AppState, domains: &[String]) {
     match state.sync_hosts_with(domains) {
@@ -624,14 +627,34 @@ fn hosts_path() -> String {
     }
 }
 
-fn flush_dns() {
+fn flush_dns() -> Result<(), String> {
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("ipconfig")
+        use std::os::windows::{ffi::OsStringExt, process::CommandExt};
+        use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+        let mut buffer = [0u16; 32768];
+        let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+        if length == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        if length as usize >= buffer.len() {
+            return Err("Windows system directory path is too long".into());
+        }
+        let mut executable =
+            std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length as usize]));
+        executable.push("ipconfig.exe");
+        let output = std::process::Command::new(executable)
             .args(["/flushdns"])
             .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .output();
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(format!(
+                "ipconfig.exe /flushdns exited with {}",
+                output.status
+            ));
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -645,6 +668,7 @@ fn flush_dns() {
             .args(["--flush-caches"])
             .output();
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ function health(patch: Partial<BlockingHealth>) {
       extension_connected: false,
       hosts_writable: false,
       hosts_sync_error: null,
+      extension_only_rules: false,
       ...patch,
     },
   });
@@ -85,6 +86,12 @@ describe("BlockingHealthBanner", () => {
     health({ hosts_writable: true, hosts_sync_error: "invalid FocusGuard section" });
     render(<BlockingHealthBanner />);
     expect(banner()).toHaveTextContent("invalid FocusGuard section");
+  });
+
+  it("warns when active rules require an extension even if hosts access works", () => {
+    health({ hosts_writable: true, extension_only_rules: true });
+    render(<BlockingHealthBanner />);
+    expect(banner()).toHaveTextContent("Install it to block websites");
   });
 
   it("stays quiet when nothing is meant to be blocked", () => {

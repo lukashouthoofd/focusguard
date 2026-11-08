@@ -13,8 +13,10 @@ use std::{
 
 use focuser_app::{
     AppContext, Command, CommandErrorPayload,
+    command::WebsiteRuleKind,
     protocol::{self, RequestEnvelope, ResponseEnvelope},
 };
+use focuser_common::types::WebsiteMatchType;
 use focuser_core::{BlockEngine, Database};
 use tokio::{
     io::AsyncWriteExt, net::windows::named_pipe::NamedPipeServer, sync::Semaphore, task::JoinSet,
@@ -195,14 +197,19 @@ fn service_policy_command_allowed(command: &Command) -> bool {
             | Command::CreateBlockList { .. }
             | Command::DeleteBlockList { .. }
             | Command::ToggleBlockList { .. }
-            | Command::AddWebsiteRule { .. }
+            | Command::AddWebsiteRule {
+                rule: WebsiteMatchType::Domain(_),
+                ..
+            }
             | Command::RemoveWebsiteRule { .. }
-            | Command::BulkImportWebsites { .. }
+            | Command::BulkImportWebsites {
+                kind: WebsiteRuleKind::Domain,
+                ..
+            }
             | Command::ClearAllWebsites
             | Command::UpdateSchedule { .. }
             | Command::GetBlockingHealth
             | Command::ApplyBlocks
-            | Command::RemoveBlocks
     )
 }
 
@@ -614,15 +621,107 @@ mod tests {
 
         let applied = fs::read_to_string(&hosts).unwrap();
         assert!(applied.starts_with(original));
+        assert!(applied.contains("127.0.0.1 www.reddit.com\r\n"));
         assert!(applied.contains("127.0.0.1 reddit.com\r\n"));
+
+        let response = send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::RemoveBlocks,
+        )
+        .await;
+        assert_eq!(
+            response.result.unwrap_err().code,
+            "service_command_not_supported"
+        );
+        crate::enforcement::reconcile_once(&context).unwrap();
+        assert_eq!(fs::read_to_string(&hosts).unwrap(), applied);
 
         drop(context);
         let reopened =
             Arc::new(crate::enforcement::open_context(&database, &hosts, no_flush).unwrap());
         crate::enforcement::reconcile_once(&reopened).unwrap();
         let recovered = fs::read_to_string(&hosts).unwrap();
+        assert!(recovered.contains("127.0.0.1 www.reddit.com\r\n"));
         assert!(recovered.contains("127.0.0.1 reddit.com\r\n"));
         assert_eq!(recovered, applied);
+    }
+
+    #[tokio::test]
+    async fn policy_pipe_rejects_rules_the_hosts_writer_cannot_enforce() {
+        let name = test_pipe_name();
+        let owner_sid = current_user_sid_string().unwrap();
+        let service_sid = current_user_sid_string().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("service.db");
+        let hosts = directory.path().join("hosts");
+        fs::write(&hosts, "127.0.0.1 localhost\n").unwrap();
+        let context =
+            Arc::new(crate::enforcement::open_context(&database, &hosts, no_flush).unwrap());
+
+        let list = send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::CreateBlockList {
+                name: "Work".into(),
+            },
+        )
+        .await
+        .result
+        .unwrap()
+        .as_block_list()
+        .unwrap()
+        .clone();
+
+        for rule in [
+            WebsiteMatchType::Keyword("casino".into()),
+            WebsiteMatchType::Wildcard("*.example.com".into()),
+            WebsiteMatchType::UrlPath("example.com/private".into()),
+            WebsiteMatchType::EntireInternet,
+        ] {
+            let response = send_policy_command(
+                &name,
+                &owner_sid,
+                &service_sid,
+                Arc::clone(&context),
+                Command::AddWebsiteRule {
+                    list_id: list.id,
+                    rule,
+                },
+            )
+            .await;
+            assert_eq!(
+                response.result.unwrap_err().code,
+                "service_command_not_supported"
+            );
+        }
+
+        let response = send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::BulkImportWebsites {
+                list_id: list.id,
+                values: vec!["casino".into()],
+                kind: WebsiteRuleKind::Keyword,
+            },
+        )
+        .await;
+        assert_eq!(
+            response.result.unwrap_err().code,
+            "service_command_not_supported"
+        );
+
+        assert!(!service_policy_command_allowed(&Command::RemoveBlocks));
+        assert!(service_policy_command_allowed(&Command::AddWebsiteRule {
+            list_id: list.id,
+            rule: WebsiteMatchType::Domain("example.com".into()),
+        }));
     }
 
     #[tokio::test]

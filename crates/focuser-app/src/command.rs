@@ -374,12 +374,14 @@ pub struct BlockingHealth {
 impl BlockingHealth {
     /// True when the user expects blocking but neither mechanism can deliver.
     ///
-    /// The extension alone is enough, and a writable hosts file alone is
-    /// enough. Only losing both is a failure worth interrupting anyone over.
+    /// A hosts file covers exact domain rules; the extension covers every rule
+    /// type. Warn when the remaining active rules exceed available coverage.
     pub fn is_failing(&self) -> bool {
         self.active_lists > 0
             && !self.extension_connected
-            && (!self.hosts_writable || self.hosts_sync_error.is_some())
+            && (!self.hosts_writable
+                || self.hosts_sync_error.is_some()
+                || self.extension_only_rules)
     }
 }
 
@@ -573,6 +575,16 @@ mod health_tests {
         let mut status = health(1, false, true);
         status.hosts_sync_error = Some("invalid owned section".into());
         assert!(status.is_failing());
+    }
+
+    #[test]
+    fn extension_only_rules_are_not_claimed_as_blocked_by_hosts_file_access() {
+        let mut status = health(1, false, true);
+        status.extension_only_rules = true;
+        assert!(status.is_failing());
+
+        status.extension_connected = true;
+        assert!(!status.is_failing());
     }
 
     #[test]

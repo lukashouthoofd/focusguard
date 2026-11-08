@@ -173,9 +173,6 @@ mod windows_service_host {
                 return Err(error);
             }
         };
-        if let Err(error) = enforcement::reconcile_once(&context) {
-            tracing::warn!(%error, "initial service policy reconciliation failed");
-        }
         status_handle.set_service_status(status(
             ServiceState::Running,
             ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
@@ -239,6 +236,8 @@ mod windows_service_host {
             hosts_path,
             enforcement::flush_system_dns,
         )?);
+        enforcement::reconcile_once(&context)
+            .map_err(|error| anyhow::anyhow!("initial policy reconciliation failed: {error}"))?;
         let runtime = Builder::new_multi_thread().enable_all().build()?;
         let listener = runtime
             .block_on(pipe::prepare(&owner_sid, &service_sid))

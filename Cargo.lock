@@ -1501,6 +1501,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows 0.58.0",
+ "windows-sys 0.61.2",
  "x11rb",
 ]
 
