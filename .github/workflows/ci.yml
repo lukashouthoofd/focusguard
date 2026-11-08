@@ -207,6 +207,23 @@ jobs:
       - name: Build (Firefox)
         run: npm run build:firefox
 
+  windows-service-recovery:
+    name: Windows SCM policy recovery (ephemeral runner only)
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build isolated service and IPC probe
+        run: cargo build --locked -p focuser-service --bin focusguard-service --example scm_policy_probe
+
+      - name: Exercise LocalSystem SCM restart and policy reconciliation
+        shell: pwsh
+        run: ./scripts/windows-service-recovery-smoke.ps1
+
   package-macos:
     name: macOS DMG (${{ matrix.target }})
     strategy:

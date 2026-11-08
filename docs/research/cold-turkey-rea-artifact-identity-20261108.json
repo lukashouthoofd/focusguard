@@ -1,0 +1,319 @@
+﻿{
+  "evidence_id": "ev_1b58188d8da15bdea285229bc04b4b28d72eb08151494d5cb45d38622eb9b909",
+  "subject": {
+    "name": "C:\\Program Files\\Cold Turkey\\Cold Turkey Blocker.exe",
+    "digest": {
+      "sha256": "5bc434b593d219d3686a403296d02e3d163234504900ce94fa04a6b2e982d509"
+    },
+    "format": "pe",
+    "architecture": "x86_64",
+    "local_path": "C:\\Program Files\\Cold Turkey\\Cold Turkey Blocker.exe"
+  },
+  "provider": {
+    "id": "rea-dotnet-static",
+    "name": "REA managed static analysis provider",
+    "version": "1"
+  },
+  "predicate_type": "rea.analysis",
+  "operation": "inspect_managed_artifact",
+  "parameters": {},
+  "normalized_result": {
+    "artifact": {
+      "path": "C:\\Program Files\\Cold Turkey\\Cold Turkey Blocker.exe",
+      "sha256": "5bc434b593d219d3686a403296d02e3d163234504900ce94fa04a6b2e982d509",
+      "byte_length": 2030072,
+      "format": "pe"
+    },
+    "pe": {
+      "machine": 34404,
+      "machine_hex": "0x8664",
+      "architecture": "x86_64",
+      "optional_header": "pe32-plus",
+      "section_count": 2,
+      "characteristics": 34,
+      "cli": {
+        "header_offset": 512,
+        "header_size": 72,
+        "runtime_version": "2.5",
+        "flags": 1,
+        "flag_names": [
+          "il-only"
+        ],
+        "entry_point": {
+          "kind": "metadata-token",
+          "value": "0x06000001"
+        },
+        "metadata_rva": 226052,
+        "metadata_size": 118356,
+        "resources_rva": 344408,
+        "resources_size": 1261360,
+        "strong_name_rva": 0,
+        "strong_name_size": 0,
+        "managed_native_header_rva": 0,
+        "managed_native_header_size": 0,
+        "ready_to_run_signature": false
+      }
+    },
+    "classification": {
+      "status": "managed",
+      "container": "pe",
+      "runtime_family": "dotnet-framework",
+      "implementation": "cil",
+      "managed_architecture": "x86_64",
+      "evidence": [
+        {
+          "code": "cli-header-observed",
+          "detail": "A file-backed PE CLI header and metadata root were admitted.",
+          "file_offset": 512
+        },
+        {
+          "code": "target-framework-observed",
+          "detail": "An assembly-level TargetFrameworkAttribute names .NET Framework.",
+          "file_offset": 236936
+        },
+        {
+          "code": "managed-architecture-derived",
+          "detail": "Managed architecture x86_64 is derived from PE machine and CLI flags.",
+          "file_offset": 528
+        }
+      ]
+    },
+    "module": {
+      "name": "Cold Turkey Blocker.exe",
+      "generation": 0,
+      "mvid": "e043869c-9a55-4fd6-bbed-df6b104da4df",
+      "enc_id": null,
+      "enc_base_id": null,
+      "token": "0x00000001",
+      "row_offset": 218608
+    },
+    "assembly": {
+      "name": "Cold Turkey Blocker",
+      "version": "4.9.0.0",
+      "culture": null,
+      "flags": 0,
+      "hash_algorithm": 32772,
+      "public_key": {
+        "kind": "none",
+        "byte_length": 0,
+        "sha256": null,
+        "token": null
+      },
+      "token": "0x20000001",
+      "row_offset": 243108
+    },
+    "target_frameworks": [
+      ".NETFramework,Version=v4.8"
+    ],
+    "references": [
+      {
+        "name": "mscorlib",
+        "version": "4.0.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "1b960802b155541df3837ade50790da7e91762d14b8e011fa8223424ff75acdb",
+          "token": "b77a5c561934e089"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x23000001",
+        "row_offset": 243130
+      },
+      {
+        "name": "System",
+        "version": "4.0.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "1b960802b155541df3837ade50790da7e91762d14b8e011fa8223424ff75acdb",
+          "token": "b77a5c561934e089"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x23000002",
+        "row_offset": 243150
+      },
+      {
+        "name": "Microsoft.VisualBasic",
+        "version": "10.0.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "971150dd73dc318e68a98cce9b91ac7dea2d43c562b4f5a9a2f4272c7e29477e",
+          "token": "b03f5f7f11d50a3a"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x23000003",
+        "row_offset": 243170
+      },
+      {
+        "name": "System.Windows.Forms",
+        "version": "4.0.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "1b960802b155541df3837ade50790da7e91762d14b8e011fa8223424ff75acdb",
+          "token": "b77a5c561934e089"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x23000004",
+        "row_offset": 243190
+      },
+      {
+        "name": "System.Drawing",
+        "version": "4.0.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "971150dd73dc318e68a98cce9b91ac7dea2d43c562b4f5a9a2f4272c7e29477e",
+          "token": "b03f5f7f11d50a3a"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x23000005",
+        "row_offset": 243210
+      },
+      {
+        "name": "Microsoft.Data.Sqlite",
+        "version": "10.0.1.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "0c822fa4e49edd02fc45b3bcdf419fe48a730be8ea1510af4fbb2e3e1a8a32c4",
+          "token": "adb9793829ddae60"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x23000006",
+        "row_offset": 243230
+      },
+      {
+        "name": "System.Core",
+        "version": "4.0.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "1b960802b155541df3837ade50790da7e91762d14b8e011fa8223424ff75acdb",
+          "token": "b77a5c561934e089"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x23000007",
+        "row_offset": 243250
+      },
+      {
+        "name": "Newtonsoft.Json",
+        "version": "13.0.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "5e3983bfe4275194db8c41b49d8f49c0d1fc9ecaf947e99e787224d9cce9599c",
+          "token": "30ad4fe6b2a6aeed"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x23000008",
+        "row_offset": 243270
+      },
+      {
+        "name": "Microsoft.WindowsAPICodePack.Shell",
+        "version": "1.1.5.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "0546b02a8f2b8a2e751f5cf34091b1136b049a1c00f769df4cded6d8525151bd",
+          "token": "8985beaab7ea3f04"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x23000009",
+        "row_offset": 243290
+      },
+      {
+        "name": "Microsoft.Toolkit.Uwp.Notifications",
+        "version": "7.1.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "5ba71c49420a324a3969f4e9d052ed004321eaa6acca341b348753ee322df060",
+          "token": "4aff67a105548ee2"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x2300000a",
+        "row_offset": 243310
+      },
+      {
+        "name": "Windows.Foundation.UniversalApiContract",
+        "version": "19.0.0.0",
+        "culture": null,
+        "flags": 512,
+        "public_key_or_token": {
+          "kind": "none",
+          "byte_length": 0,
+          "sha256": null,
+          "token": null
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x2300000b",
+        "row_offset": 243330
+      },
+      {
+        "name": "System.DirectoryServices.AccountManagement",
+        "version": "4.0.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "public-key-token",
+          "byte_length": 8,
+          "sha256": "1b960802b155541df3837ade50790da7e91762d14b8e011fa8223424ff75acdb",
+          "token": "b77a5c561934e089"
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x2300000c",
+        "row_offset": 243350
+      },
+      {
+        "name": "Interop.SHDocVw",
+        "version": "1.1.0.0",
+        "culture": null,
+        "flags": 0,
+        "public_key_or_token": {
+          "kind": "none",
+          "byte_length": 0,
+          "sha256": null,
+          "token": null
+        },
+        "hash_value_sha256": null,
+        "hash_value_length": 0,
+        "token": "0x2300000d",
+        "row_offset": 243370
+      }
+    ]
+  }
+}

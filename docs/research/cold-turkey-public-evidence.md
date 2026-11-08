@@ -1,12 +1,12 @@
 ﻿# Public Cold Turkey Evidence Ledger
 
-Public documentation checked: 2026-11-07. That review was limited to official product documentation and Windows documentation; no Cold Turkey executable was installed, executed, or decompiled as part of it. Product-documentation claims are not treated as independently tested runtime behavior.
+Public documentation checked: 2026-11-07. That review was limited to official product documentation and Windows documentation. Product-documentation claims are not treated as independently tested runtime behavior. Separate REA static metadata evidence for a pre-existing local executable is documented in [cold-turkey-rea-evidence.md](cold-turkey-rea-evidence.md).
 
 ## Separate REA artifact evidence
 
-On 2026-11-08, REA recorded a read-only static inspection of a pre-existing local `Cold Turkey Blocker.exe` artifact (Evidence ID `ev_1b58188d8da15bdea285229bc04b4b28d72eb08151494d5cb45d38622eb9b909`, SHA-256 `5bc434b593d219d3686a403296d02e3d163234504900ce94fa04a6b2e982d509`). The retained progress summary reports an x64 .NET Framework 4.8 assembly, SQLite and WinForms references, and managed metadata names related to blocks, schedules, timers, app/web rules, Task Manager, time changes, and strict-password settings. These are artifact metadata observations only. They do not establish runtime behavior, service architecture, persistence, filtering, or anti-bypass strength.
+On 2026-11-08, REA recorded read-only static metadata inspections of a pre-existing local `Cold Turkey Blocker.exe`. The artifact identity Evidence ID is `ev_1b58188d8da15bdea285229bc04b4b28d72eb08151494d5cb45d38622eb9b909`; its SHA-256 is `5bc434b593d219d3686a403296d02e3d163234504900ce94fa04a6b2e982d509`. REA reports a 64-bit .NET Framework 4.8 managed assembly, SQLite and WinForms references, and member names associated with blocks, schedules, timers, app/web settings, Task Manager, time-change, and strict-password options. These are static metadata observations only. They do not establish runtime behavior, service architecture, persistence, filtering, or anti-bypass strength. See [the REA evidence record and limitations](cold-turkey-rea-evidence.md).
 
-The canonical REA Evidence JSON is not checked into this repository, so these details can only be cross-referenced to the Evidence ID and hash recorded in `PROGRESS.md`; do not treat the summary as a substitute for the full record. No licensing or entitlement mechanism was analyzed, no paid-only behavior was accessed, and the executable was not run.
+No licensing or entitlement mechanism was analyzed, no paid-only behavior was accessed, and the executable was not launched. The checked-in member record is a selected projection, not the full canonical REA Evidence bundle.
 
 ## Publicly documented behavior
 
@@ -31,7 +31,7 @@ The marketing phrase "almost impossible" is not a security property. We have no 
 
 ## Legal and research boundary
 
-Cold Turkey's current Terms page (effective 2026-10-15) says software use is governed by an EULA that may be presented during installation, and its licence terms restrict evaluating copies by others. We therefore did not install or inspect the proprietary executable. We rely on published product documentation and implement against Windows APIs with original code and assets. We do not access Pro-only behavior by bypassing licensing and do not copy proprietary code.
+Cold Turkey's current Terms page (effective 2026-10-15) says software use is governed by an EULA that may be presented during installation, and states that users must not allow others to evaluate copies. The EULA accepted for the pre-existing local copy is unavailable here, and this project does not assess the Terms' enforceability. We did not install or launch that executable; the limited REA work was static metadata inspection only. Further binary or non-public runtime analysis is held pending legal review. We rely on published product documentation and implement against Windows APIs with original code and assets. We do not access Pro-only behavior by bypassing licensing and do not copy proprietary code.
 
 EU Directive 2009/24/EC protects program expression while stating that underlying ideas and principles are not protected by copyright. Its decompilation exception is narrow and concerns interoperability, with express limits on using obtained information to develop a substantially similar expression or infringe copyright. We are not relying on that exception. This is a product-engineering boundary, not legal advice; counsel should review any later binary analysis, trademark use, or distribution questions.
 
@@ -46,6 +46,7 @@ EU Directive 2009/24/EC protects program expression while stating that underlyin
 ## Evidence status
 
 - Publicly documented functionality: **observed in documentation**.
+- Executable identity/member metadata: **observed by REA static inspection; selected evidence preserved, with member projection limitations documented**.
 - Windows service existence: **asserted by official documentation, not runtime-tested**.
 - Internal service and filtering design: **unknown**.
 - Anti-bypass resilience: **not independently verified**.

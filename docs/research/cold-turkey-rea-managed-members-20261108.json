@@ -1,0 +1,662 @@
+﻿{
+    "record_kind":  "selected projection from an existing REA managed-members Evidence record",
+    "evidence_id":  "ev_b29b148034ed158bb350768ed0ec89439c61eda2dd6551d38e53dfc7fd6080ea",
+    "captured_at_utc":  "2026-11-08T11:48:44.227Z",
+    "rea_package_version":  "6.3.0",
+    "provider":  {
+                     "id":  "rea-dotnet-static",
+                     "name":  "REA managed static analysis provider",
+                     "version":  "1"
+                 },
+    "operation":  "inspect_managed_members",
+    "subject":  {
+                    "name":  "C:\\Program Files\\Cold Turkey\\Cold Turkey Blocker.exe",
+                    "sha256":  "5bc434b593d219d3686a403296d02e3d163234504900ce94fa04a6b2e982d509",
+                    "byte_length":  2030072,
+                    "format":  "pe",
+                    "architecture":  "x86_64"
+                },
+    "source_command":  "rea inspect-managed-members \"C:\\Program Files\\Cold Turkey\\Cold Turkey Blocker.exe\" --format json --filter-output normalized_result.methods",
+    "source_export":  {
+                          "original_temp_path":  "C:\\Users\\lukas\\AppData\\Local\\Temp\\cold-turkey-managed-members.json",
+                          "byte_length":  17688114,
+                          "sha256":  "a8baa1b1efe6fbf8b64eaeb83ec5c9fa3256b4ab5667817f76454267c9f1ec79",
+                          "shape":  "normalized_result.methods only; no Evidence envelope",
+                          "method_count":  557
+                      },
+    "projection_note":  "Contains only selected public-feature-related member names and signatures. CIL bodies, anchors, and all non-selected members are omitted. No licensing or entitlement logic was selected or interpreted. This is not the full canonical Evidence bundle.",
+    "normalized_result":  {
+                              "artifact":  {
+                                               "path":  "C:\\Program Files\\Cold Turkey\\Cold Turkey Blocker.exe",
+                                               "sha256":  "5bc434b593d219d3686a403296d02e3d163234504900ce94fa04a6b2e982d509",
+                                               "byte_length":  2030072,
+                                               "format":  "pe"
+                                           },
+                              "methods":  [
+                                              {
+                                                  "token":  "0x060000cb",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_Timer",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000cc",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_Timer",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000cd",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_StartTime",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000ce",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_StartTime",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000cf",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_PomodoroTime",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000d0",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_PomodoroTime",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000d1",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_Lock",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000d2",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_Lock",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000d3",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_LockUnblock",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000d4",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_LockUnblock",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000d5",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_RestartUnblock",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000d6",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_RestartUnblock",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000d9",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_Password",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000da",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_Password",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000e1",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_Web",
+                                                  "signature":  {
+                                                                    "kind":  "unknown",
+                                                                    "return_type":  null,
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000e2",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_Web",
+                                                  "signature":  {
+                                                                    "kind":  "unknown",
+                                                                    "return_type":  null,
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000e5",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_Apps",
+                                                  "signature":  {
+                                                                    "kind":  "unknown",
+                                                                    "return_type":  null,
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000e6",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_Apps",
+                                                  "signature":  {
+                                                                    "kind":  "unknown",
+                                                                    "return_type":  null,
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000e7",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "get_Schedule",
+                                                  "signature":  {
+                                                                    "kind":  "unknown",
+                                                                    "return_type":  null,
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000e8",
+                                                  "declaring_type":  "Cold_Turkey.Block",
+                                                  "name":  "set_Schedule",
+                                                  "signature":  {
+                                                                    "kind":  "unknown",
+                                                                    "return_type":  null,
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000ee",
+                                                  "declaring_type":  "Cold_Turkey.Schedule",
+                                                  "name":  "get_StartTime",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000ef",
+                                                  "declaring_type":  "Cold_Turkey.Schedule",
+                                                  "name":  "set_StartTime",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000f0",
+                                                  "declaring_type":  "Cold_Turkey.Schedule",
+                                                  "name":  "get_EndTime",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x060000f1",
+                                                  "declaring_type":  "Cold_Turkey.Schedule",
+                                                  "name":  "set_EndTime",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000101",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_BlockAllowance",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000102",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_BlockAllowance",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000139",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_BlockUnsupported",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x0600013a",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_BlockUnsupported",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x0600013b",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_BlockInstaller",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x0600013c",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_BlockInstaller",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x0600013d",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_BlockTaskManager",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x0600013e",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_BlockTaskManager",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x0600013f",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_BlockTaskManagerChrome",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000140",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_BlockTaskManagerChrome",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000141",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_BlockTimeChange",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000142",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_BlockTimeChange",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000143",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_BlockUserChange",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000144",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_BlockUserChange",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000145",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_BlockEmbedded",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000146",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_BlockEmbedded",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000147",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_BlockInactive",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000148",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_BlockInactive",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x0600014f",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_PasswordStrict",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000150",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_PasswordStrict",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000155",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "get_StatsStrict",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000156",
+                                                  "declaring_type":  "Cold_Turkey.SubSettings",
+                                                  "name":  "set_StatsStrict",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000164",
+                                                  "declaring_type":  "Cold_Turkey.Additional",
+                                                  "name":  "get_ScheduleShowAll",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000165",
+                                                  "declaring_type":  "Cold_Turkey.Additional",
+                                                  "name":  "set_ScheduleShowAll",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000166",
+                                                  "declaring_type":  "Cold_Turkey.Additional",
+                                                  "name":  "get_BlocksOrder",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "string",
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x06000167",
+                                                  "declaring_type":  "Cold_Turkey.Additional",
+                                                  "name":  "set_BlocksOrder",
+                                                  "signature":  {
+                                                                    "kind":  "method",
+                                                                    "return_type":  "void",
+                                                                    "parameter_types":  [
+                                                                                            "string"
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x0600016d",
+                                                  "declaring_type":  "Cold_Turkey.Settings",
+                                                  "name":  "get_Blocks",
+                                                  "signature":  {
+                                                                    "kind":  "unknown",
+                                                                    "return_type":  null,
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              },
+                                              {
+                                                  "token":  "0x0600016e",
+                                                  "declaring_type":  "Cold_Turkey.Settings",
+                                                  "name":  "set_Blocks",
+                                                  "signature":  {
+                                                                    "kind":  "unknown",
+                                                                    "return_type":  null,
+                                                                    "parameter_types":  [
+
+                                                                                        ]
+                                                                }
+                                              }
+                                          ]
+                          }
+}

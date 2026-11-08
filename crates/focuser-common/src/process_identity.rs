@@ -25,10 +25,13 @@ use windows_sys::Win32::{
 };
 
 const MIN_USER_PID: u32 = 4;
-const PROTECTED_PROCESS_NAMES: [&str; 3] = [
+const PROTECTED_PROCESS_NAMES: [&str; 4] = [
     "focusguard-ui.exe",
     "focusguard-service.exe",
     "focusguard.exe",
+    // Reserved for the per-session window-message helper. The service must
+    // never close or terminate its own UI-side enforcement bridge.
+    "focusguard-agent.exe",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -39,6 +42,17 @@ pub struct ProcessIdentity {
     pub image_path: String,
     pub image_name: String,
     pub creation_time: u64,
+}
+
+impl ProcessIdentity {
+    /// Whether this is one of FocusGuard's own processes. These executables
+    /// are never valid app-block targets, including when observed from the
+    /// separate SCM service process.
+    pub fn is_focusguard_process(&self) -> bool {
+        PROTECTED_PROCESS_NAMES
+            .iter()
+            .any(|name| self.image_name.eq_ignore_ascii_case(name))
+    }
 }
 
 /// Snapshot processes whose query metadata is available to the service token.
@@ -87,9 +101,7 @@ pub fn terminate_if_unchanged(
         || expected.pid == std::process::id()
         || expected.session_id == 0
         || expected.owner_sid != configured_owner_sid
-        || PROTECTED_PROCESS_NAMES
-            .iter()
-            .any(|name| expected.image_name.eq_ignore_ascii_case(name))
+        || expected.is_focusguard_process()
     {
         return Ok(false);
     }
@@ -348,6 +360,9 @@ mod tests {
 
         identity.session_id = snapshot_process(child.id()).unwrap().session_id;
         identity.image_name = "focusguard-ui.exe".into();
+        assert!(!terminate_if_unchanged(&identity, &owner_sid).unwrap());
+        identity.image_name = "focusguard-agent.exe".into();
+        assert!(identity.is_focusguard_process());
         assert!(!terminate_if_unchanged(&identity, &owner_sid).unwrap());
         assert!(child.try_wait().unwrap().is_none());
         child.kill().unwrap();
