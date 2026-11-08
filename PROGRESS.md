@@ -1,5 +1,11 @@
 # Progress
 
+## 2026-11-08 - macOS bundle packaging check
+
+- Added the generated `icons/icon.icns` to the Tauri bundle inputs and added a `macos-latest` CI job that builds an unsigned DMG with updater artifacts disabled. The job is a packaging smoke test; it does not sign or notarize a distributable release.
+- Local checks confirm `tauri.conf.json` parses, the configured ICNS has a valid `icns` header with a matching 1,607,996-byte declared/file size, and the CI workflow parses as YAML. This Windows host cannot run the macOS bundle build, so the new job still needs a CI run before DMG packaging is proven.
+- macOS remains functionally incomplete: the app runs enforcement in the desktop process, and editing `/etc/hosts` requires administrator rights. There is no persistent macOS enforcement daemon, installer lifecycle, launch/recovery evidence, or end-to-end browser/app blocking test. Do not describe this as full Cold Turkey parity or a release-ready Mac app.
+
 ## 2026-11-08 - Authenticated Windows service client
 
 - Added the reusable `focuser-client` crate. Its production entry point opens the versioned named pipe, checks that SCM reports the server PID as the running, own-process `FocusGuardService`, applies bounded connect retries and a five-second protocol deadline, and rejects responses with a mismatched request ID. It uses only SCM connect/query-status access, so it does not need to open the privileged service process token.
@@ -78,6 +84,12 @@ The public repository was created at <https://github.com/lukashouthoofd/focusgua
 - No SCM service was installed and no machine-wide policy was changed. The custom-host pipe tests do not exercise the SCM PID query against an installed service; this UI integration is not end-to-end verified until a disposable Windows VM is available.
 - The runtime-owner lock arbitrates desktop UI processes only. The future installer must stop any already-running local UI before starting an SCM service; that service/SCM lifecycle still needs disposable-VM verification.
 - Cross-process lock exclusion and release after forcibly killing its owner are now covered by a Windows subprocess test. The NSIS logon task currently uses `/rl highest`; migration must replace it with an unelevated service-client launcher and verify the task principal in a disposable VM before enabling installer service mode.
+
+## 2026-11-08 - Windows process identity prerequisite
+
+- Added a Windows-only service process snapshot that records PID, session ID, owner SID, image path/name, and creation time. Any future service termination must reopen the process, compare the complete identity and configured owner SID, then terminate through that same handle; PID reuse cannot redirect a validated action.
+- The primitive refuses PID reuse, other-owner processes, session 0, FocusGuard executable names, and the service's own PID. Windows tests successfully terminate only a copied sacrificial test executable and verify owner mismatch, stale identity, and protected-target rejection.
+- This is groundwork, not an app blocker: it is not wired into the SCM service loop and app-rule mutations remain denied. Session 0 cannot use the desktop's `WM_CLOSE` flow for another session, so active WTS session selection and a per-session helper for save prompts/grace handling are required before enabling app rules. No SCM identity, other-user, or VM behavior has been tested.
 
 ## 2026-11-07 — repository scaffold and direction
 

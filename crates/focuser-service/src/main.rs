@@ -5,6 +5,9 @@ mod pipe;
 mod enforcement;
 
 #[cfg(windows)]
+pub mod process_identity;
+
+#[cfg(windows)]
 mod windows_service_host {
     use super::enforcement;
     use super::pipe;

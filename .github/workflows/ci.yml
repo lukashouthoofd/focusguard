@@ -206,3 +206,35 @@ jobs:
 
       - name: Build (Firefox)
         run: npm run build:firefox
+
+  package-macos:
+    name: macOS DMG package check
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build CLI sidecar
+        shell: bash
+        run: |
+          cargo build --locked --release -p focuser-cli
+          mkdir -p crates/focuser-ui/binaries
+          host=$(rustc -vV | awk '/^host:/ {print $2}')
+          cp "target/release/focuser-cli" "crates/focuser-ui/binaries/focuser-cli-$host"
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked --version 2.10.1
+
+      - name: Build unsigned DMG without updater artifacts
+        working-directory: crates/focuser-ui
+        run: |
+          cargo tauri build --bundles dmg --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          test -n "$(find ../../target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"

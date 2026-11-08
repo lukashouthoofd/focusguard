@@ -1,0 +1,368 @@
+//! Session- and owner-aware Windows process identities for service enforcement.
+//!
+//! A ToolHelp PID/name pair is not safe to act on later: the process may exit
+//! and Windows may reuse its PID. These snapshots retain the owner SID, logon
+//! session, image path, and creation time; termination opens a fresh handle and
+//! verifies every field before acting on that process object.
+
+use std::{ffi::c_void, io, mem::size_of, path::Path, ptr::null_mut};
+
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, FILETIME, HANDLE, LocalFree},
+    Security::Authorization::ConvertSidToStringSidW,
+    Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser},
+    System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
+        RemoteDesktop::ProcessIdToSessionId,
+        Threading::{
+            GetProcessTimes, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
+        },
+    },
+};
+
+const MIN_USER_PID: u32 = 4;
+const PROTECTED_PROCESS_NAMES: [&str; 3] = [
+    "focusguard-ui.exe",
+    "focusguard-service.exe",
+    "focusguard.exe",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub session_id: u32,
+    pub owner_sid: String,
+    pub image_path: String,
+    pub image_name: String,
+    pub creation_time: u64,
+}
+
+/// Snapshot processes whose query metadata is available to the service token.
+/// Unknown owners or incomplete identities are omitted so enforcement can
+/// never guess an account from a PID alone.
+pub fn list_processes() -> Vec<ProcessIdentity> {
+    let mut processes = Vec::new();
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot.is_null() || snapshot as isize == -1 {
+        return processes;
+    }
+    let snapshot = OwnedHandle(snapshot);
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut found = unsafe { Process32FirstW(snapshot.0, &mut entry) } != 0;
+    while found {
+        let pid = entry.th32ProcessID;
+        if pid > MIN_USER_PID
+            && let Ok(identity) = snapshot_process(pid)
+        {
+            processes.push(identity);
+        }
+        found = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
+    }
+    processes
+}
+
+/// Read one process through a query-only handle. This is also useful for
+/// checking a recorded target after a monitoring delay.
+pub fn snapshot_process(pid: u32) -> io::Result<ProcessIdentity> {
+    let handle = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    identity_from_handle(pid, handle.0)
+}
+
+/// Terminate only if the live process still has the full identity recorded in
+/// `expected` and belongs to the configured account. The open handle pins the
+/// process object between validation and termination, preventing PID reuse
+/// after the checks from redirecting the action.
+pub fn terminate_if_unchanged(
+    expected: &ProcessIdentity,
+    configured_owner_sid: &str,
+) -> io::Result<bool> {
+    if expected.pid <= MIN_USER_PID
+        || expected.pid == std::process::id()
+        || expected.session_id == 0
+        || expected.owner_sid != configured_owner_sid
+        || PROTECTED_PROCESS_NAMES
+            .iter()
+            .any(|name| expected.image_name.eq_ignore_ascii_case(name))
+    {
+        return Ok(false);
+    }
+
+    let handle = open_process(
+        expected.pid,
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+    )?;
+    let current = identity_from_handle(expected.pid, handle.0)?;
+    if !same_process(expected, &current, configured_owner_sid) {
+        return Ok(false);
+    }
+
+    let terminated = unsafe { TerminateProcess(handle.0, 1) } != 0;
+    if terminated {
+        Ok(true)
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn same_process(
+    expected: &ProcessIdentity,
+    current: &ProcessIdentity,
+    configured_owner_sid: &str,
+) -> bool {
+    expected.pid == current.pid
+        && expected.session_id == current.session_id
+        && expected.owner_sid == configured_owner_sid
+        && current.owner_sid == configured_owner_sid
+        && expected.creation_time == current.creation_time
+        && expected
+            .image_path
+            .eq_ignore_ascii_case(&current.image_path)
+        && expected
+            .image_name
+            .eq_ignore_ascii_case(&current.image_name)
+}
+
+fn identity_from_handle(pid: u32, process: HANDLE) -> io::Result<ProcessIdentity> {
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    if unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut session_id = 0;
+    if unsafe { ProcessIdToSessionId(pid, &mut session_id) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let image_path = process_image_path(process)?;
+    let image_name = Path::new(&image_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "process image has no name"))?;
+
+    Ok(ProcessIdentity {
+        pid,
+        session_id,
+        owner_sid: process_owner_sid(process)?,
+        image_path,
+        image_name,
+        creation_time: (u64::from(creation.dwHighDateTime) << 32)
+            | u64::from(creation.dwLowDateTime),
+    })
+}
+
+fn process_image_path(process: HANDLE) -> io::Result<String> {
+    let mut buffer = [0u16; 32768];
+    let mut length = buffer.len() as u32;
+    if unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(String::from_utf16_lossy(&buffer[..length as usize]))
+}
+
+fn process_owner_sid(process: HANDLE) -> io::Result<String> {
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let token = OwnedHandle(token);
+
+    let mut required = 0;
+    unsafe { GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut required) };
+    if required == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut storage = vec![0usize; (required as usize).div_ceil(size_of::<usize>())];
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            storage.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let token_user = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
+    sid_to_string(token_user.User.Sid)
+}
+
+fn sid_to_string(sid: *mut c_void) -> io::Result<String> {
+    let mut sid_text = null_mut();
+    if unsafe { ConvertSidToStringSidW(sid, &mut sid_text) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut length = 0;
+    unsafe {
+        while *sid_text.add(length) != 0 {
+            length += 1;
+        }
+    }
+    let text = unsafe { std::slice::from_raw_parts(sid_text, length) };
+    let sid =
+        String::from_utf16(text).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+    unsafe { LocalFree(sid_text.cast()) };
+    sid
+}
+
+fn open_process(pid: u32, access: u32) -> io::Result<OwnedHandle> {
+    let process = unsafe { OpenProcess(access, 0, pid) };
+    if process.is_null() {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(OwnedHandle(process))
+    }
+}
+
+struct OwnedHandle(HANDLE);
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        process::{Child, Command, Stdio},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use tempfile::TempDir;
+
+    fn spawn_helper(directory: &TempDir) -> (Child, String) {
+        let name = format!("focusguard-process-probe-{}.exe", uuid::Uuid::new_v4());
+        let path = directory.path().join(&name);
+        std::fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
+        let ready = directory.path().join("ready");
+        let child = Command::new(path)
+            .args([
+                "--exact",
+                "process_identity::tests::process_identity_child_probe",
+                "--nocapture",
+            ])
+            .env("FOCUSGUARD_PROCESS_IDENTITY_READY", &ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(ready.exists(), "probe process did not start");
+        (child, name)
+    }
+
+    #[test]
+    fn snapshot_contains_owner_session_image_and_creation_identity() {
+        let current = snapshot_process(std::process::id()).unwrap();
+        assert!(current.owner_sid.starts_with("S-1-"));
+        assert!(current.image_name.to_ascii_lowercase().ends_with(".exe"));
+        assert!(current.creation_time > 0);
+    }
+
+    #[test]
+    fn process_enumeration_includes_the_current_test_process() {
+        let current = list_processes()
+            .into_iter()
+            .find(|process| process.pid == std::process::id())
+            .expect("process enumeration should include this test process");
+        assert_eq!(current, snapshot_process(std::process::id()).unwrap());
+    }
+
+    #[test]
+    fn stale_creation_identity_is_never_terminated() {
+        let directory = TempDir::new().unwrap();
+        let (mut child, _) = spawn_helper(&directory);
+        let mut identity = snapshot_process(child.id()).unwrap();
+        let owner_sid = identity.owner_sid.clone();
+        identity.creation_time += 1;
+
+        assert!(!terminate_if_unchanged(&identity, &owner_sid).unwrap());
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn service_session_zero_and_focusguard_processes_are_never_terminated() {
+        let directory = TempDir::new().unwrap();
+        let (mut child, _) = spawn_helper(&directory);
+        let mut identity = snapshot_process(child.id()).unwrap();
+        let owner_sid = identity.owner_sid.clone();
+
+        identity.session_id = 0;
+        assert!(!terminate_if_unchanged(&identity, &owner_sid).unwrap());
+
+        identity.session_id = snapshot_process(child.id()).unwrap().session_id;
+        identity.image_name = "focusguard-ui.exe".into();
+        assert!(!terminate_if_unchanged(&identity, &owner_sid).unwrap());
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn configured_owner_mismatch_is_never_terminated() {
+        let directory = TempDir::new().unwrap();
+        let (mut child, _) = spawn_helper(&directory);
+        let identity = snapshot_process(child.id()).unwrap();
+
+        assert_ne!(identity.owner_sid, "S-1-0-0");
+        assert!(!terminate_if_unchanged(&identity, "S-1-0-0").unwrap());
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn matching_identity_terminates_only_the_sacrificial_child_process() {
+        let directory = TempDir::new().unwrap();
+        let (mut child, expected_name) = spawn_helper(&directory);
+        let identity = snapshot_process(child.id()).unwrap();
+        let owner_sid = identity.owner_sid.clone();
+
+        assert_eq!(identity.image_name, expected_name);
+        assert_eq!(
+            identity.session_id,
+            snapshot_process(std::process::id()).unwrap().session_id
+        );
+        assert!(terminate_if_unchanged(&identity, &owner_sid).unwrap());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "target process survived termination"
+        );
+    }
+
+    #[test]
+    fn process_identity_child_probe() {
+        let Ok(ready) = std::env::var("FOCUSGUARD_PROCESS_IDENTITY_READY") else {
+            return;
+        };
+        std::fs::write(ready, std::process::id().to_string()).unwrap();
+        loop {
+            thread::sleep(Duration::from_secs(60));
+        }
+    }
+}
