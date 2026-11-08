@@ -164,6 +164,13 @@ mod windows_service_host {
     fn service_main(arguments: Vec<OsString>) {
         let process_arguments = service_process_arguments();
         let diagnostic_path = diagnostics_path_from_arguments(&process_arguments);
+        let panic_diagnostic_path = diagnostic_path.clone();
+        std::panic::set_hook(Box::new(move |panic| {
+            record_diagnostic(
+                panic_diagnostic_path.as_deref(),
+                &format!("service panic: {panic}"),
+            );
+        }));
         record_diagnostic(
             diagnostic_path.as_deref(),
             "SCM dispatched service entry point",
@@ -254,11 +261,13 @@ mod windows_service_host {
             ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
             ServiceExitCode::NO_ERROR,
         ))?;
+        record_diagnostic(diagnostic_path.as_deref(), "service reported Running");
 
         let reconcile_context = Arc::clone(&context);
         let app_reconcile_context = Arc::clone(&context);
         let app_owner_sid = owner_sid.clone();
         let service_pid = std::process::id();
+        record_diagnostic(diagnostic_path.as_deref(), "entering async service loop");
         let result = runtime.block_on(async move {
             tokio::select! {
                 result = pipe::serve(owner_sid, service_sid, listener, context, true) => result.context("named-pipe server stopped"),
@@ -271,6 +280,10 @@ mod windows_service_host {
                 _ = shutdown_rx => Ok(()),
             }
         });
+        record_diagnostic(
+            diagnostic_path.as_deref(),
+            &format!("async service loop returned: {result:?}"),
+        );
         status_handle.set_service_status(status(
             ServiceState::StopPending,
             ServiceControlAccept::empty(),

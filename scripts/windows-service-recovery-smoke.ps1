@@ -35,6 +35,27 @@ function Get-ServiceInfo {
     Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue
 }
 
+function Show-RecentServiceEvents {
+    foreach ($logName in @('System', 'Application')) {
+        try {
+            $filter = @{
+                LogName = $logName
+                StartTime = [DateTime]::UtcNow.AddMinutes(-5)
+            }
+            if ($logName -eq 'System') {
+                $filter.ProviderName = 'Service Control Manager'
+            }
+            else {
+                $filter.Id = @(1000, 1001, 1026)
+            }
+            Get-WinEvent -FilterHashtable $filter -MaxEvents 20 -ErrorAction Stop |
+                Select-Object TimeCreated, Id, ProviderName, Message |
+                Format-List | Out-Host
+        }
+        catch { Write-Host "Could not read recent $logName service events: $_" }
+    }
+}
+
 function Wait-ServiceRunning([uint32] $PreviousPid = 0) {
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
     $lastCheckpoint = $null
@@ -51,6 +72,7 @@ function Wait-ServiceRunning([uint32] $PreviousPid = 0) {
                 Get-Content -LiteralPath $diagnosticsPath | Out-Host
             }
             & sc.exe queryex $serviceName | Out-Host
+            Show-RecentServiceEvents
             throw "$serviceName stopped before reaching Running."
         }
         if ($null -ne $service -and $service.State -eq 'Running' -and
@@ -73,16 +95,7 @@ function Wait-ServiceRunning([uint32] $PreviousPid = 0) {
         Write-Host 'Temporary hosts fixture at startup timeout:'
         Get-Content -LiteralPath $hostsPath | Out-Host
     }
-    try {
-        Get-WinEvent -FilterHashtable @{
-            LogName = 'System'
-            ProviderName = 'Service Control Manager'
-            StartTime = [DateTime]::UtcNow.AddMinutes(-5)
-        } -MaxEvents 20 -ErrorAction Stop |
-            Select-Object TimeCreated, Id, LevelDisplayName, Message |
-            Format-List | Out-Host
-    }
-    catch { Write-Host "Could not read recent SCM events: $_" }
+    Show-RecentServiceEvents
     throw "SCM did not start/restart $serviceName within 45 seconds."
 }
 
