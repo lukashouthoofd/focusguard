@@ -55,6 +55,7 @@ pub struct ExtensionRuleSet {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<ExtensionListScope>,
     /// Version counter — extension discards stale updates.
+    #[specta(type = specta_typescript::Number)]
     pub version: u64,
     /// Domains to block (exact match — also handled by hosts file as backup).
     pub blocked_domains: Vec<String>,

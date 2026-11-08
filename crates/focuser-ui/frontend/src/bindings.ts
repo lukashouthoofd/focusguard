@@ -14,7 +14,7 @@ export const commands = {
 	 *  Without it the default is the event-loop thread, and a slow command — icons
 	 *  especially — freezes the window.
 	 */
-	runCommand: (command: Command) => typedError<CommandResult, CommandErrorPayload>(__TAURI_INVOKE("run_command", { command })),
+	runCommand: (command: Command) => typedError<CommandResult_Serialize, CommandErrorPayload>(__TAURI_INVOKE("run_command", { command })),
 	/**
 	 *  Lets the frontend select the service-only screen without starting a
 	 *  service request or guessing from local state.
@@ -355,6 +355,8 @@ export type Command =
 { cmd: "reset_settings" } |
 /**  Whether blocking is actually in force right now, and why not if it isn't. */
 { cmd: "get_blocking_health" } |
+/**  Current compiled rules for the browser extension. */
+{ cmd: "get_extension_rules" } |
 /**  Push the current blocked-domain set to the hosts file now. */
 { cmd: "apply_blocks" } |
 /**  Remove FocusGuard's hosts-file entries. */
@@ -455,11 +457,41 @@ export type CommandErrorPayload = {
  *  24 of its 55 commands, which meant the frontend hand-decoded shapes that the
  *  compiler never checked.
  */
-export type CommandResult =
+export type CommandResult = CommandResult_Serialize | CommandResult_Deserialize;
+
+/**
+ *  The result of a successful [`Command`].
+ *
+ *  Deliberately typed — the old command layer returned `serde_json::Value` from
+ *  24 of its 55 commands, which meant the frontend hand-decoded shapes that the
+ *  compiler never checked.
+ */
+export type CommandResult_Deserialize =
 /**  Succeeded, nothing to return. */
-{ kind: "unit" } | { kind: "block_list"; data: BlockList } | { kind: "block_lists"; data: BlockList[] } | { kind: "website_rule"; data: WebsiteRule } | { kind: "app_rule"; data: AppRule } | { kind: "exception"; data: ExceptionRule } |
+({ kind: "unit" }) & { data?: never } | { kind: "block_list"; data: BlockList } | { kind: "block_lists"; data: BlockList[] } | { kind: "website_rule"; data: WebsiteRule } | { kind: "app_rule"; data: AppRule } | { kind: "exception"; data: ExceptionRule } |
 /**  A number of affected items — e.g. rules imported or cleared. */
-{ kind: "count"; data: number } | { kind: "stats"; data: UsageStat[] } | { kind: "blocked_events"; data: BlockedEvent[] } | { kind: "protection_status"; data: ProtectionInfo[] } | { kind: "scheduled_protection_status"; data: ScheduledProtectionStatus[] } | { kind: "shared_allowance_status"; data: SharedAllowanceStatus[] } | { kind: "blocking_health"; data: BlockingHealth } |
+{ kind: "count"; data: number } | { kind: "stats"; data: UsageStat[] } | { kind: "blocked_events"; data: BlockedEvent[] } | { kind: "protection_status"; data: ProtectionInfo[] } | { kind: "scheduled_protection_status"; data: ScheduledProtectionStatus[] } | { kind: "shared_allowance_status"; data: SharedAllowanceStatus[] } | { kind: "blocking_health"; data: BlockingHealth } | { kind: "extension_rules"; data: ExtensionRuleSet_Deserialize } |
+/**  A setting value; `None` when unset and no default was supplied. */
+{ kind: "setting"; data: string | null } |
+/**  A yes/no outcome — e.g. "was a session actually paused". */
+{ kind: "flag"; data: boolean } |
+/**  Current Pomodoro session, or `None` when idle. */
+{ kind: "pomodoro_status"; data: PomodoroStatus | null } | { kind: "pomodoro_session"; data: PomodoroSession } | { kind: "pomodoro_events"; data: PomodoroEventDto[] } | { kind: "pomodoro_history"; data: PomodoroHistoryEntry[] } | { kind: "pomodoro_presets"; data: PomodoroPreset[] } | { kind: "allowance"; data: Allowance } | { kind: "allowances"; data: AllowanceStatus[] } | { kind: "allowance_notifications"; data: AllowanceNotificationDto[] } | { kind: "allowance_history"; data: AllowanceUsageEntry[] } |
+/**  Free text — an exported configuration document, or a version string. */
+{ kind: "text"; data: string } | { kind: "browser_status"; data: BrowserStatus[] } | { kind: "app_icons"; data: AppIcon[] };
+
+/**
+ *  The result of a successful [`Command`].
+ *
+ *  Deliberately typed — the old command layer returned `serde_json::Value` from
+ *  24 of its 55 commands, which meant the frontend hand-decoded shapes that the
+ *  compiler never checked.
+ */
+export type CommandResult_Serialize =
+/**  Succeeded, nothing to return. */
+({ kind: "unit" }) & { data?: never } | { kind: "block_list"; data: BlockList } | { kind: "block_lists"; data: BlockList[] } | { kind: "website_rule"; data: WebsiteRule } | { kind: "app_rule"; data: AppRule } | { kind: "exception"; data: ExceptionRule } |
+/**  A number of affected items — e.g. rules imported or cleared. */
+{ kind: "count"; data: number } | { kind: "stats"; data: UsageStat[] } | { kind: "blocked_events"; data: BlockedEvent[] } | { kind: "protection_status"; data: ProtectionInfo[] } | { kind: "scheduled_protection_status"; data: ScheduledProtectionStatus[] } | { kind: "shared_allowance_status"; data: SharedAllowanceStatus[] } | { kind: "blocking_health"; data: BlockingHealth } | { kind: "extension_rules"; data: ExtensionRuleSet_Serialize } |
 /**  A setting value; `None` when unset and no default was supplied. */
 { kind: "setting"; data: string | null } |
 /**  A yes/no outcome — e.g. "was a session actually paused". */
@@ -487,6 +519,126 @@ export type ExceptionType =
 ({ Wildcard: string }) & { Domain?: never; UrlPath?: never } |
 /**  Allow local file:// URLs */
 "LocalFiles";
+
+export type ExtensionListScope = ExtensionListScope_Serialize | ExtensionListScope_Deserialize;
+
+export type ExtensionListScope_Deserialize = {
+	rules: ExtensionRuleSet_Deserialize,
+	/**  None: ordinary list; Some(true): budget left; Some(false): exhausted. */
+	shared_permits: boolean | null,
+	scheduled: boolean,
+};
+
+export type ExtensionListScope_Serialize = {
+	rules: ExtensionRuleSet_Serialize,
+	/**  None: ordinary list; Some(true): budget left; Some(false): exhausted. */
+	shared_permits: boolean | null,
+	scheduled: boolean,
+};
+
+/**
+ *  A compiled set of rules pushed to the extension.
+ *
+ *  The service sends this whenever block lists change. The extension
+ *  caches it and uses it for real-time URL matching without round-trips.
+ */
+export type ExtensionRuleSet = ExtensionRuleSet_Serialize | ExtensionRuleSet_Deserialize;
+
+/**
+ *  A compiled set of rules pushed to the extension.
+ *
+ *  The service sends this whenever block lists change. The extension
+ *  caches it and uses it for real-time URL matching without round-trips.
+ */
+export type ExtensionRuleSet_Deserialize = {
+	/**
+	 *  New clients evaluate each list independently. Legacy clients retain the
+	 *  conservative flattened blocking rules and cannot spend shared budgets.
+	 */
+	scopes?: ExtensionListScope_Deserialize[],
+	/**  Version counter — extension discards stale updates. */
+	version: number,
+	/**  Domains to block (exact match — also handled by hosts file as backup). */
+	blocked_domains: string[],
+	/**  Keywords to match anywhere in the URL. */
+	blocked_keywords: string[],
+	/**  Wildcard patterns to match against full URLs. */
+	blocked_wildcards: string[],
+	/**  URL path prefixes to block (e.g., "reddit.com/r/gaming"). */
+	blocked_url_paths: string[],
+	/**  If true, block all URLs except those in `allowed_domains`. */
+	block_entire_internet: boolean,
+	/**  Domains allowed even when everything else is blocked (exceptions). */
+	allowed_domains: string[],
+	/**  Wildcard patterns for exceptions. */
+	allowed_wildcards: string[],
+	/**  Pages allowed on a site that is otherwise blocked, as `host/path`. */
+	allowed_url_paths?: string[],
+	/**
+	 *  Sites an allowance is keeping open, sent with `scopes`. They are in
+	 *  `allowed_domains` too, but there they are mixed with every list's
+	 *  exceptions, and scoped matching must tell the two apart.
+	 */
+	allowance_domains?: string[],
+	/**
+	 *  A block list is locked right now. The extension keeps the browser's
+	 *  own extensions page shut meanwhile, where it could be switched off.
+	 */
+	locked?: boolean,
+	/**
+	 *  Optional display categories for exact-domain rules, keyed by canonical
+	 *  host. Used only to choose the block-page illustration and copy.
+	 */
+	domain_categories?: { [key in string]: string },
+};
+
+/**
+ *  A compiled set of rules pushed to the extension.
+ *
+ *  The service sends this whenever block lists change. The extension
+ *  caches it and uses it for real-time URL matching without round-trips.
+ */
+export type ExtensionRuleSet_Serialize = {
+	/**
+	 *  New clients evaluate each list independently. Legacy clients retain the
+	 *  conservative flattened blocking rules and cannot spend shared budgets.
+	 */
+	scopes?: ExtensionListScope_Serialize[],
+	/**  Version counter — extension discards stale updates. */
+	version: number,
+	/**  Domains to block (exact match — also handled by hosts file as backup). */
+	blocked_domains: string[],
+	/**  Keywords to match anywhere in the URL. */
+	blocked_keywords: string[],
+	/**  Wildcard patterns to match against full URLs. */
+	blocked_wildcards: string[],
+	/**  URL path prefixes to block (e.g., "reddit.com/r/gaming"). */
+	blocked_url_paths: string[],
+	/**  If true, block all URLs except those in `allowed_domains`. */
+	block_entire_internet: boolean,
+	/**  Domains allowed even when everything else is blocked (exceptions). */
+	allowed_domains: string[],
+	/**  Wildcard patterns for exceptions. */
+	allowed_wildcards: string[],
+	/**  Pages allowed on a site that is otherwise blocked, as `host/path`. */
+	allowed_url_paths: string[],
+	/**
+	 *  Sites an allowance is keeping open, sent with `scopes`. They are in
+	 *  `allowed_domains` too, but there they are mixed with every list's
+	 *  exceptions, and scoped matching must tell the two apart.
+	 */
+	allowance_domains?: string[],
+	/**
+	 *  A block list is locked right now. The extension keeps the browser's
+	 *  own extensions page shut meanwhile, where it could be switched off.
+	 */
+	locked: boolean,
+	/**
+	 *  Optional display categories for exact-domain rules, keyed by canonical
+	 *  host. Used only to choose the block-page illustration and copy.
+	 */
+	domain_categories?: { [key in string]: string },
+};
 
 /**
  *  How a protection window can be ended early — Cold Turkey calls this a

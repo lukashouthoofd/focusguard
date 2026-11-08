@@ -6,6 +6,7 @@
 - Routed extension rule polling through a persistent Native Messaging port first, retaining loopback HTTP fallback. Chrome host registration now requires an exact 32-character extension ID and no longer writes a wildcard origin; Firefox uses the configured stable ID.
 - Checks passed: `cargo test --workspace --locked --quiet`, strict workspace Clippy, format check, and workspace build; extension TypeScript compile, 140 extension tests, and Chrome/Firefox production builds. Native host tests cover exact-ID manifest generation and rejection of wildcard/invalid IDs. New extension API tests cover native rule retrieval, service errors, and HTTP fallback. The lockfile was regenerated offline after adding crate dependencies.
 - Limits: only rule reads are bridged. Heartbeats, blocked reports, and allowance ticks still require the UI HTTP API. Service install/registration is not packaged, and no installed service or real browser integration has been exercised locally. Same-user processes can call the service pipe, so the service command remains read-only and narrowly scoped; Native Messaging does not authenticate the caller as a browser.
+- The first full CI attempt exposed the new rule result in Specta bindings and rejected its `u64` version without an explicit JavaScript-number mapping. Added that mapping, regenerated the committed Tauri bindings, and verified frontend typecheck plus all 284 frontend tests.
 
 ## 2026-11-08 — SCM recovery CI and app-rule coordination groundwork
 
