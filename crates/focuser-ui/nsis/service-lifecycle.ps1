@@ -624,7 +624,6 @@ function Configure-Service([string] $OwnerSid) {
   $backedUpNativeHost = $false
   $backedUpDatabase = $false
   $copiedInitialDatabase = $false
-  $previousImagePath = if ($registered) { $registered.PathName } else { $null }
   try {
     Write-LifecycleTrace 'Stopping the existing service and preparing protected ProgramData'
     Stop-ServiceForInstall $OwnerSid
@@ -653,9 +652,13 @@ function Configure-Service([string] $OwnerSid) {
     $imagePath = '"{0}" --owner-sid {1} --database "{2}" --hosts-file "{3}" --diagnostics-file "{4}"' -f `
       $serviceExe, $OwnerSid, $database, $hostsFile, $diagnostics
     if ($registered) {
-      Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('config', $serviceName, 'binPath=', $imagePath, 'start=', 'auto', 'obj=', 'LocalSystem')
+      # The service executable and arguments live in this stable directory and
+      # ProgramData path across upgrades. Keep its ImagePath unchanged; sc.exe's
+      # native parser is brittle when binPath contains nested quoted arguments.
+      Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('config', $serviceName, 'start=', 'auto', 'obj=', 'LocalSystem')
     } else {
-      Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('create', $serviceName, 'binPath=', $imagePath, 'start=', 'auto', 'obj=', 'LocalSystem', 'DisplayName=', 'FocusGuard')
+      New-Service -Name $serviceName -BinaryPathName $imagePath -DisplayName 'FocusGuard' `
+        -StartupType Automatic -ErrorAction Stop | Out-Null
       $createdService = $true
     }
     Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('sidtype', $serviceName, 'unrestricted')
@@ -697,9 +700,6 @@ function Configure-Service([string] $OwnerSid) {
           Copy-Item -LiteralPath $nativeHostBackup -Destination $nativeHostExe -Force
         }
         if ($backedUpDatabase) { Restore-ExistingDatabase }
-        if ($previousImagePath) {
-          Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('config', $serviceName, 'binPath=', $previousImagePath)
-        }
         Start-Service -Name $serviceName
         Wait-ServiceState 'Running'
         Register-NativeMessagingHosts
