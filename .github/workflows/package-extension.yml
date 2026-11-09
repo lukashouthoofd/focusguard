@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   package:
-    name: Build signed-store submission archives (no submission)
+    name: Build browser store submission archives (no submission)
     runs-on: ubuntu-latest
     defaults:
       run:

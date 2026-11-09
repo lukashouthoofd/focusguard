@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $serviceName = 'FocusGuardService'
-$serviceKey = 'HKLM:\SOFTWARE\PublikHQ\FocusGuard'
+$serviceMetadataPath = 'SOFTWARE\PublikHQ\FocusGuard'
 $dataDir = Join-Path $env:ProgramData 'PublikHQ\FocusGuard'
 $database = Join-Path $dataDir 'focusguard.db'
 $installStatePath = Join-Path $dataDir 'install-state.json'
@@ -58,6 +58,58 @@ function Get-RegisteredService {
   Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
 }
 
+function Get-ServiceMetadata {
+  $views = if ([Environment]::Is64BitOperatingSystem) {
+    @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)
+  } else {
+    @([Microsoft.Win32.RegistryView]::Default)
+  }
+  foreach ($view in $views) {
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+    try {
+      $key = $base.OpenSubKey($serviceMetadataPath, $false)
+      if (-not $key) { continue }
+      try {
+        return [pscustomobject]@{
+          OwnerSid = $key.GetValue('OwnerSid')
+          InstallDir = $key.GetValue('InstallDir')
+        }
+      } finally { $key.Dispose() }
+    } finally { $base.Dispose() }
+  }
+  return $null
+}
+
+function Set-ServiceMetadata([string] $OwnerSid, [string] $InstallDir) {
+  $view = if ([Environment]::Is64BitOperatingSystem) {
+    [Microsoft.Win32.RegistryView]::Registry64
+  } else {
+    [Microsoft.Win32.RegistryView]::Default
+  }
+  $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+  try {
+    $key = $base.CreateSubKey($serviceMetadataPath)
+    if (-not $key) { throw "Could not create HKLM registry key $serviceMetadataPath in view $view." }
+    try {
+      $key.SetValue('OwnerSid', $OwnerSid, [Microsoft.Win32.RegistryValueKind]::String)
+      $key.SetValue('InstallDir', $InstallDir, [Microsoft.Win32.RegistryValueKind]::String)
+    } finally { $key.Dispose() }
+  } finally { $base.Dispose() }
+}
+
+function Remove-ServiceMetadata {
+  $views = if ([Environment]::Is64BitOperatingSystem) {
+    @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)
+  } else {
+    @([Microsoft.Win32.RegistryView]::Default)
+  }
+  foreach ($view in $views) {
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+    try { $base.DeleteSubKeyTree($serviceMetadataPath, $false) }
+    finally { $base.Dispose() }
+  }
+}
+
 function Assert-OwnedServicePath {
   $registered = Get-RegisteredService
   if (-not $registered) { return }
@@ -73,11 +125,8 @@ function Assert-OwnedServicePath {
 }
 
 function Get-ExistingOwnerSid {
-  if (Test-Path $serviceKey) {
-    $metadata = Get-ItemProperty -LiteralPath $serviceKey -Name OwnerSid -ErrorAction SilentlyContinue
-    $saved = if ($metadata) { $metadata.OwnerSid } else { $null }
-    if ($saved) { return [Security.Principal.SecurityIdentifier]::new($saved).Value }
-  }
+  $metadata = Get-ServiceMetadata
+  if ($metadata -and $metadata.OwnerSid) { return [Security.Principal.SecurityIdentifier]::new($metadata.OwnerSid).Value }
 
   $registered = Get-RegisteredService
   if ($registered) {
@@ -675,10 +724,7 @@ function Configure-Service([string] $OwnerSid) {
     Remove-OwnerNativeMessagingRegistrations $OwnerSid
     Write-LifecycleTrace 'Native Messaging hosts are registered and recognized legacy entries removed'
 
-    New-Item -Path (Split-Path -Parent $serviceKey) -Force | Out-Null
-    New-Item -Path $serviceKey -Force | Out-Null
-    Set-ItemProperty -LiteralPath $serviceKey -Name OwnerSid -Value $OwnerSid
-    Set-ItemProperty -LiteralPath $serviceKey -Name InstallDir -Value $InstallDir
+    Set-ServiceMetadata -OwnerSid $OwnerSid -InstallDir $InstallDir
     Write-InstallState $OwnerSid
     Remove-Item -LiteralPath $serviceBackup -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $nativeHostBackup -Force -ErrorAction SilentlyContinue
@@ -727,7 +773,7 @@ function Configure-Service([string] $OwnerSid) {
         Remove-OwnerNativeMessagingRegistrations $OwnerSid
         Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('delete', $serviceName)
         Wait-ServiceState 'Absent'
-        if (-not $registered) { Remove-Item -LiteralPath $serviceKey -Recurse -Force -ErrorAction SilentlyContinue }
+        if (-not $registered) { Remove-ServiceMetadata }
         Remove-Item -LiteralPath $serviceInstallDir -Recurse -Force -ErrorAction SilentlyContinue
         if (-not $stateFileExisted) { Remove-Item -LiteralPath $installStatePath -Force -ErrorAction SilentlyContinue }
         if ($copiedInitialDatabase -and -not $databaseExisted) {
@@ -837,7 +883,7 @@ function Remove-FocusGuardService([bool] $RemoveData) {
     }
   }
 
-  Remove-Item -LiteralPath $serviceKey -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-ServiceMetadata
   $normalizedServiceDir = [IO.Path]::GetFullPath($serviceInstallDir).TrimEnd('\')
   $allowedServiceDir = [IO.Path]::GetFullPath((Join-Path $programFilesRoot 'PublikHQ\FocusGuard\Service')).TrimEnd('\')
   if ($normalizedServiceDir -ne $allowedServiceDir) { throw 'Refusing to remove service files outside the FocusGuard Program Files directory.' }

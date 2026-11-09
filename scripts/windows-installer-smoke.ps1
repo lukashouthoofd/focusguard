@@ -26,8 +26,7 @@ $serviceDir = Join-Path $programFilesRoot 'PublikHQ\FocusGuard\Service'
 $nativeHostExe = Join-Path $serviceDir 'focuser-native.exe'
 $nativeManifestDir = Join-Path $serviceDir 'native-messaging'
 $chromeExtensionId = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\extension\identity.json') -Raw | ConvertFrom-Json).chrome_extension_id
-$serviceKey = 'HKLM:\SOFTWARE\PublikHQ\FocusGuard'
-$installKey = $serviceKey
+$serviceMetadataPath = 'SOFTWARE\PublikHQ\FocusGuard'
 $ownerSid = $identity.User.Value
 $legacyManifestDir = Join-Path $env:APPDATA 'focuser\FocusGuard\data\native-messaging'
 $legacyChromeManifest = Join-Path $legacyManifestDir 'com.focuser.native.json'
@@ -57,6 +56,51 @@ $legacyAutostartSeeded = $false
 
 function Get-ProductService {
   Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+}
+
+function Get-ServiceMetadataViews {
+  if ([Environment]::Is64BitOperatingSystem) {
+    return @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)
+  }
+  return @([Microsoft.Win32.RegistryView]::Default)
+}
+
+function Test-ProductMetadata {
+  foreach ($view in (Get-ServiceMetadataViews)) {
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+    try {
+      $key = $base.OpenSubKey($serviceMetadataPath, $false)
+      if ($key) { $key.Dispose(); return $true }
+    } finally { $base.Dispose() }
+  }
+  return $false
+}
+
+function Get-ProductMetadata {
+  $view = if ([Environment]::Is64BitOperatingSystem) {
+    [Microsoft.Win32.RegistryView]::Registry64
+  } else {
+    [Microsoft.Win32.RegistryView]::Default
+  }
+  $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+  try {
+    $key = $base.OpenSubKey($serviceMetadataPath, $false)
+    if (-not $key) { throw "FocusGuard service metadata is missing from the expected registry view $view." }
+    try {
+      return [pscustomobject]@{
+        OwnerSid = $key.GetValue('OwnerSid')
+        InstallDir = $key.GetValue('InstallDir')
+      }
+    } finally { $key.Dispose() }
+  } finally { $base.Dispose() }
+}
+
+function Remove-TestServiceMetadata {
+  foreach ($view in (Get-ServiceMetadataViews)) {
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+    try { $base.DeleteSubKeyTree($serviceMetadataPath, $false) }
+    finally { $base.Dispose() }
+  }
 }
 
 function Wait-ProductService([string] $State, [uint32] $PreviousPid = 0, [int] $TimeoutSeconds = 60) {
@@ -357,7 +401,7 @@ try {
   if (-not (Test-Path -LiteralPath $probeExe)) { throw "Missing installer policy probe: $probeExe" }
   if (Get-ProductService) { throw "A service named $serviceName already exists; refusing to modify it." }
   if (Get-ScheduledTask -TaskPath '\' -TaskName 'FocusGuard' -ErrorAction SilentlyContinue) { throw 'A scheduled task named FocusGuard already exists; refusing to modify it.' }
-  if (Test-Path -LiteralPath $serviceKey) { throw "The FocusGuard service registry marker already exists; refusing to modify it." }
+  if (Test-ProductMetadata) { throw 'FocusGuard service metadata already exists in a Windows registry view; refusing to modify it.' }
   if (Test-Path -LiteralPath $dataDir) { throw 'FocusGuard ProgramData already exists; refusing to modify it.' }
   if (Test-Path -LiteralPath $serviceDir) { throw 'FocusGuard service files already exist; refusing to modify them.' }
   foreach ($keyPath in @(
@@ -379,14 +423,16 @@ try {
   Write-Host 'Installing FocusGuard silently on the disposable GitHub-hosted runner.'
   Start-HiddenAndWait $installer @('/S', "/LOG=$nsisLogPath")
   $service = Wait-ProductService 'Running'
-  $installDir = (Get-ItemProperty -LiteralPath $installKey -Name InstallDir -ErrorAction Stop).InstallDir
+  $metadata = Get-ProductMetadata
+  $installDir = $metadata.InstallDir
+  if (-not $installDir) { throw 'The installer did not persist its installation directory.' }
   $uninstallerPath = Join-Path $installDir 'uninstall.exe'
   if (-not (Test-Path -LiteralPath $uninstallerPath)) { throw "Missing uninstaller at $uninstallerPath" }
   if ($service.StartMode -ne 'Auto' -or $service.StartName -ne 'LocalSystem') {
     throw "Unexpected service configuration: start=$($service.StartMode), account=$($service.StartName)."
   }
   if ($service.PathName -notlike "*$serviceDir*") { throw "Service executable is outside its protected Program Files location: $($service.PathName)" }
-  $savedOwnerSid = (Get-ItemProperty -LiteralPath $serviceKey -Name OwnerSid -ErrorAction Stop).OwnerSid
+  $savedOwnerSid = $metadata.OwnerSid
   if ($savedOwnerSid -ne $identity.User.Value) { throw 'The installer persisted an unexpected policy owner SID.' }
   $installState = Get-Content -LiteralPath (Join-Path $dataDir 'install-state.json') -Raw | ConvertFrom-Json
   if ($installState.schema -ne 1 -or $installState.owner_sid -ne $identity.User.Value) {
@@ -466,6 +512,15 @@ try {
   $currentHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($hostsPath)))
   if ($currentHash -ne $hostsHash) { throw 'Uninstall did not restore the original Windows hosts-file bytes.' }
   Write-Host 'Silent uninstall removed the service and restored the hosts file byte for byte.'
+} catch {
+  Write-Host "Windows installer smoke failed: $($_.Exception.Message)"
+  if (Test-Path -LiteralPath $lifecycleTracePath) {
+    Write-Host "Lifecycle trace:`n$((Get-Content -LiteralPath $lifecycleTracePath -Tail 100) -join [Environment]::NewLine)"
+  }
+  if (Test-Path -LiteralPath $nsisLogPath) {
+    Write-Host "NSIS log:`n$((Get-Content -LiteralPath $nsisLogPath -Tail 100) -join [Environment]::NewLine)"
+  }
+  throw
 } finally {
   # The runner is disposable, but restore the real system file before the job
   # exits even when an assertion or installer step fails.
@@ -503,7 +558,7 @@ try {
       if ($restoredHash -ne $hostsHash) { throw 'The cleanup step could not restore the original hosts-file bytes.' }
 
       if ($testMayOwnSystemState -and -not (Get-ProductService)) {
-        Remove-Item -LiteralPath $serviceKey -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-TestServiceMetadata
         $expectedDataDir = [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'PublikHQ\FocusGuard')).TrimEnd('\')
         if ([IO.Path]::GetFullPath($dataDir).TrimEnd('\') -eq $expectedDataDir) {
           Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue

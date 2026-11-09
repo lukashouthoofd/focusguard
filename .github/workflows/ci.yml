@@ -251,6 +251,14 @@ jobs:
           cargo tauri build --target "${{ matrix.target }}" --bundles dmg --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
           test -n "$(find ../../target/${{ matrix.target }}/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
 
+      - name: Upload unsigned macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: focusguard-macos-${{ matrix.target }}-unsigned-dmg
+          path: target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+
   package-windows:
     name: Windows NSIS package
     runs-on: windows-latest
@@ -298,6 +306,14 @@ jobs:
           if ($packages.Count -ne 1) { throw "Expected one NSIS package, found $($packages.Count)." }
           if ($packages[0].Length -le 0) { throw 'The NSIS package is empty.' }
           Write-Output "Built unsigned Windows package: $($packages[0].Name) ($($packages[0].Length) bytes)"
+
+      - name: Upload unsigned Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: focusguard-windows-x64-unsigned-nsis
+          path: target/release/bundle/nsis/FocusGuard_*_x64-setup.exe
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Install, exercise recovery, and uninstall on disposable Windows runner
         shell: pwsh
