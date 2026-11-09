@@ -45,6 +45,9 @@ $hostsAcl = Get-Acl -LiteralPath $hostsPath
 $hostsAttributes = [IO.File]::GetAttributes($hostsPath)
 $hostsWriteTimeUtc = [IO.File]::GetLastWriteTimeUtc($hostsPath)
 $hostsHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($hostsSnapshot))
+$lifecycleTracePath = Join-Path $env:RUNNER_TEMP 'focusguard-lifecycle.log'
+$nsisLogPath = Join-Path $env:RUNNER_TEMP 'focusguard-installer.log'
+$env:FOCUSGUARD_LIFECYCLE_LOG = $lifecycleTracePath
 $uninstallerPath = $null
 $testMayOwnSystemState = $false
 $hostsMayHaveChanged = $false
@@ -149,8 +152,24 @@ function Wait-HostsRule {
 function Start-HiddenAndWait([string] $Path, [string[]] $Arguments, [int] $TimeoutSeconds = 180) {
   $process = Start-Process -FilePath $Path -ArgumentList $Arguments -PassThru -WindowStyle Hidden
   if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    $diagnostics = [Collections.Generic.List[string]]::new()
+    if (Test-Path -LiteralPath $lifecycleTracePath) {
+      $diagnostics.Add("Lifecycle trace:`n$((Get-Content -LiteralPath $lifecycleTracePath -Tail 80) -join [Environment]::NewLine)")
+    }
+    if ([IO.Path]::GetFullPath($Path) -eq [IO.Path]::GetFullPath($installer)) {
+      $focusProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -in @('powershell.exe', 'pwsh.exe', 'focusguard-ui.exe', 'focusguard-service.exe', 'focuser-native.exe')
+      } | Select-Object ProcessId, ParentProcessId, Name, CommandLine)
+      if ($focusProcesses.Count -gt 0) {
+        $diagnostics.Add("Related process snapshot:`n$(($focusProcesses | Format-Table -AutoSize | Out-String).Trim())")
+      }
+      if (Test-Path -LiteralPath $nsisLogPath) {
+        $diagnostics.Add("NSIS log:`n$((Get-Content -LiteralPath $nsisLogPath -Tail 80) -join [Environment]::NewLine)")
+      }
+    }
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-    throw "$([IO.Path]::GetFileName($Path)) exceeded its $TimeoutSeconds-second timeout."
+    $detail = if ($diagnostics.Count -gt 0) { "`n$($diagnostics -join "`n")" } else { '' }
+    throw "$([IO.Path]::GetFileName($Path)) exceeded its $TimeoutSeconds-second timeout.$detail"
   }
   if ($process.ExitCode -ne 0) {
     throw "$([IO.Path]::GetFileName($Path)) exited $($process.ExitCode)."
@@ -347,7 +366,7 @@ try {
   Seed-LegacyNativeRegistrations
   Seed-LegacyAutostart
   Write-Host 'Installing FocusGuard silently on the disposable GitHub-hosted runner.'
-  Start-HiddenAndWait $installer @('/S')
+  Start-HiddenAndWait $installer @('/S', "/LOG=$nsisLogPath")
   $service = Wait-ProductService 'Running'
   $installDir = (Get-ItemProperty -LiteralPath $installKey -Name InstallDir -ErrorAction Stop).InstallDir
   $uninstallerPath = Join-Path $installDir 'uninstall.exe'
@@ -395,7 +414,7 @@ try {
   # The old service remains active while the UI files are copied; POSTINSTALL
   # then backs up policy, replaces stable service binaries, and restarts it.
   $preUpdatePid = [uint32] $service.ProcessId
-  Start-HiddenAndWait $installer @('/S', '/UPDATE')
+  Start-HiddenAndWait $installer @('/S', '/UPDATE', "/LOG=$nsisLogPath")
   $service = Wait-ProductService 'Running' $preUpdatePid
   Wait-HostsRule
   Invoke-Probe 'verify'
@@ -485,6 +504,7 @@ try {
       }
       Remove-TestLegacyNativeRegistrations
       Remove-TestLegacyAutostart
+      Remove-Item Env:\FOCUSGUARD_LIFECYCLE_LOG -ErrorAction SilentlyContinue
     }
   }
 }

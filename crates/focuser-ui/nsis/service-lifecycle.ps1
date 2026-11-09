@@ -37,12 +37,21 @@ $nativeRegistrySpecs = @(
   [pscustomobject]@{ Key = 'Software\Mozilla\NativeMessagingHosts\com.focuser.native'; Manifest = $firefoxManifestPath }
 )
 
+function Write-LifecycleTrace([string] $Message) {
+  $tracePath = $env:FOCUSGUARD_LIFECYCLE_LOG
+  if (-not $tracePath) { return }
+  $line = "{0:o} [{1}] {2}{3}" -f [DateTime]::UtcNow, $Mode, $Message, [Environment]::NewLine
+  [IO.File]::AppendAllText($tracePath, $line, [Text.UTF8Encoding]::new($false))
+}
+
 function Invoke-Checked([string] $FilePath, [string[]] $Arguments, [int[]] $AllowedExitCodes = @(0)) {
+  Write-LifecycleTrace "Running $([IO.Path]::GetFileName($FilePath)) $($Arguments -join ' ')"
   $output = & $FilePath @Arguments 2>&1
   $exitCode = $LASTEXITCODE
   if ($exitCode -notin $AllowedExitCodes) {
     throw "$([IO.Path]::GetFileName($FilePath)) exited ${exitCode}: $($output -join ' ')"
   }
+  Write-LifecycleTrace "Completed $([IO.Path]::GetFileName($FilePath)) with exit code $exitCode"
 }
 
 function Get-RegisteredService {
@@ -419,6 +428,7 @@ function Test-OwnedUiExecutable([string] $Path, [string] $OwnerSid, [string[]] $
 
 function Remove-LegacyAutostart([string] $OwnerSid, [bool] $MigrateToUnelevatedRunEntry = $false) {
   $preserveAutostart = $false
+  Write-LifecycleTrace 'Inspecting legacy autostart entries'
   $previousInstallDirs = @(Get-PreviousOwnerInstallDirs $OwnerSid)
   $task = Get-ScheduledTask -TaskPath '\' -TaskName 'FocusGuard' -ErrorAction SilentlyContinue
   if ($task) {
@@ -451,6 +461,7 @@ function Remove-LegacyAutostart([string] $OwnerSid, [bool] $MigrateToUnelevatedR
   }
 
   if ($preserveAutostart -and $OwnerSid -and $MigrateToUnelevatedRunEntry) {
+    Write-LifecycleTrace 'Migrating legacy autostart to the unelevated per-user Run key'
     Invoke-WithOwnerRegistryHive $OwnerSid {
       param($base, $hiveName)
       $runKey = $base.CreateSubKey("$hiveName\Software\Microsoft\Windows\CurrentVersion\Run")
@@ -460,6 +471,7 @@ function Remove-LegacyAutostart([string] $OwnerSid, [bool] $MigrateToUnelevatedR
       } finally { $runKey.Dispose() }
     } | Out-Null
   }
+  Write-LifecycleTrace 'Completed legacy autostart migration'
 }
 
 function Get-OwnerProfile([string] $OwnerSid) {
@@ -591,6 +603,7 @@ function Restore-ExistingDatabase {
 }
 
 function Configure-Service([string] $OwnerSid) {
+  Write-LifecycleTrace 'Validating service payload, host file, and Native Messaging registrations'
   if (-not (Test-Path -LiteralPath $packagedServiceExe)) { throw "Missing packaged service executable: $packagedServiceExe" }
   if (-not (Test-Path -LiteralPath $packagedNativeHostExe)) { throw "Missing packaged Native Messaging host: $packagedNativeHostExe" }
   if (-not (Test-Path -LiteralPath $uiExe)) { throw "Missing packaged UI executable: $uiExe" }
@@ -613,8 +626,10 @@ function Configure-Service([string] $OwnerSid) {
   $copiedInitialDatabase = $false
   $previousImagePath = if ($registered) { $registered.PathName } else { $null }
   try {
+    Write-LifecycleTrace 'Stopping the existing service and preparing protected ProgramData'
     Stop-ServiceForInstall $OwnerSid
     Set-ProgramDataAcl
+    Write-LifecycleTrace 'Staging the initial policy database'
     $copiedInitialDatabase = Copy-InitialDatabase $OwnerSid
     if ($registered) { $backedUpDatabase = Backup-ExistingDatabase }
 
@@ -633,6 +648,7 @@ function Configure-Service([string] $OwnerSid) {
     }
     Copy-Item -LiteralPath $packagedServiceExe -Destination $serviceExe -Force
     Copy-Item -LiteralPath $packagedNativeHostExe -Destination $nativeHostExe -Force
+    Write-LifecycleTrace 'Copied service and Native Messaging executables'
 
     $imagePath = '"{0}" --owner-sid {1} --database "{2}" --hosts-file "{3}" --diagnostics-file "{4}"' -f `
       $serviceExe, $OwnerSid, $database, $hostsFile, $diagnostics
@@ -648,10 +664,13 @@ function Configure-Service([string] $OwnerSid) {
     Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('sdset', $serviceName, $dacl)
 
     $service = Get-Service -Name $serviceName
+    Write-LifecycleTrace "Starting service; current state is $($service.Status)"
     if ($service.Status -ne 'Running') { Start-Service -Name $serviceName }
     Wait-ServiceState 'Running'
+    Write-LifecycleTrace 'Service reached Running; registering Native Messaging hosts'
     Register-NativeMessagingHosts
     Remove-OwnerNativeMessagingRegistrations $OwnerSid
+    Write-LifecycleTrace 'Native Messaging hosts are registered and recognized legacy entries removed'
 
     New-Item -Path (Split-Path -Parent $serviceKey) -Force | Out-Null
     New-Item -Path $serviceKey -Force | Out-Null
@@ -662,7 +681,9 @@ function Configure-Service([string] $OwnerSid) {
     Remove-Item -LiteralPath $nativeHostBackup -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $databaseRollbackDir -Recurse -Force -ErrorAction SilentlyContinue
     Write-Output "FocusGuard service is running for policy owner $OwnerSid."
+    Write-LifecycleTrace 'Install completed and committed'
   } catch {
+    Write-LifecycleTrace "Install failed: $_"
     if ($registered) {
       try {
         if ($backedUpService -or $backedUpNativeHost -or $backedUpDatabase) {
@@ -836,6 +857,7 @@ function Remove-FocusGuardService([bool] $RemoveData) {
 }
 
 try {
+  Write-LifecycleTrace 'Lifecycle helper started'
   $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'The FocusGuard service lifecycle requires an elevated per-machine installer.'
@@ -848,10 +870,13 @@ try {
 
   switch ($Mode) {
     'PreflightInstall' {
+      Write-LifecycleTrace 'Checking install owner'
       $ownerSid = Get-InstallOwnerSid
+      Write-LifecycleTrace "Install owner is $ownerSid; checking existing service and UI processes"
       Assert-OwnedServicePath
       Assert-NoOtherOwnerUi $ownerSid
       Assert-NoNativeHostProcess
+      Write-LifecycleTrace 'Checking existing install data and browser registrations'
       $registered = Get-RegisteredService
       $state = Get-InstallState
       if ($state -and $state.owner_sid -ne $ownerSid) {
@@ -865,8 +890,10 @@ try {
       }
       Assert-NativeMessagingRegistryAvailable $ownerSid
       Write-Output "Install preflight passed for policy owner $ownerSid."
+      Write-LifecycleTrace 'Install preflight completed'
     }
     'PrepareInstall' {
+      Write-LifecycleTrace 'Preparing install and migrating legacy autostart'
       $ownerSid = Get-InstallOwnerSid
       Assert-OwnedServicePath
       Assert-NoOtherOwnerUi $ownerSid
@@ -876,8 +903,10 @@ try {
       Assert-NoNativeHostProcess
       Remove-LegacyAutostart $ownerSid $true
       Write-Output "Install preparation passed for policy owner $ownerSid; existing service enforcement remains active until the service update."
+      Write-LifecycleTrace 'Install preparation completed'
     }
     'Install' {
+      Write-LifecycleTrace 'Configuring Windows service'
       $ownerSid = Get-InstallOwnerSid
       Configure-Service $ownerSid
     }
@@ -890,12 +919,15 @@ try {
       Write-Output 'Uninstall preflight passed.'
     }
     'Remove' {
+      Write-LifecycleTrace 'Removing Windows service'
       $removeData = $DeleteData -eq '1'
       Remove-FocusGuardService $removeData
     }
   }
+  Write-LifecycleTrace 'Lifecycle helper completed successfully'
   exit 0
 } catch {
+  Write-LifecycleTrace "Lifecycle helper failed: $_"
   [Console]::Error.WriteLine("FocusGuard service lifecycle failed: $_")
   exit 1
 }
