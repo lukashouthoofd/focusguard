@@ -267,9 +267,17 @@ jobs:
         working-directory: crates/focuser-ui
         run: |
           cargo tauri build --target "${{ matrix.target }}" --bundles dmg --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
-          test -x "../../target/${{ matrix.target }}/release/bundle/macos/FocusGuard.app/Contents/MacOS/focusguard-service"
-          test -f "../../target/${{ matrix.target }}/release/bundle/macos/FocusGuard.app/Contents/Library/LaunchDaemons/com.publikhq.focusguard.daemon.plist"
-          test -n "$(find ../../target/${{ matrix.target }}/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          dmg="$(find ../../target/${{ matrix.target }}/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          mount_point="$(mktemp -d)"
+          cleanup() {
+            hdiutil detach "$mount_point" -quiet >/dev/null 2>&1 || true
+            rmdir "$mount_point" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          hdiutil attach "$dmg" -readonly -nobrowse -quiet -mountpoint "$mount_point"
+          test -x "$mount_point/FocusGuard.app/Contents/MacOS/focusguard-service"
+          test -f "$mount_point/FocusGuard.app/Contents/Library/LaunchDaemons/com.publikhq.focusguard.daemon.plist"
 
       - name: Upload unsigned macOS DMG
         uses: actions/upload-artifact@v4
