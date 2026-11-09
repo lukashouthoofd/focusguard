@@ -45,13 +45,11 @@ function Write-LifecycleTrace([string] $Message) {
 }
 
 function Get-PathAclSummary([string] $Path) {
-  try {
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
-    $sddl = $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
-    return "Owner=$($acl.Owner); SDDL=$sddl"
-  } catch {
-    return "Unavailable: $_"
-  }
+  if (-not (Test-Path -LiteralPath $Path)) { return 'Path does not exist' }
+  $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+  $output = & $icacls $Path 2>&1
+  if ($LASTEXITCODE -ne 0) { return "icacls exited ${LASTEXITCODE}: $($output -join ' | ')" }
+  return ($output -join ' | ')
 }
 
 function Invoke-Checked([string] $FilePath, [string[]] $Arguments, [int[]] $AllowedExitCodes = @(0)) {
@@ -60,6 +58,9 @@ function Invoke-Checked([string] $FilePath, [string[]] $Arguments, [int[]] $Allo
   $exitCode = $LASTEXITCODE
   if ($exitCode -notin $AllowedExitCodes) {
     throw "$([IO.Path]::GetFileName($FilePath)) exited ${exitCode}: $($output -join ' ')"
+  }
+  if ([IO.Path]::GetFileName($FilePath) -ieq 'icacls.exe' -and $output) {
+    Write-LifecycleTrace "icacls output: $($output -join ' | ')"
   }
   Write-LifecycleTrace "Completed $([IO.Path]::GetFileName($FilePath)) with exit code $exitCode"
 }
