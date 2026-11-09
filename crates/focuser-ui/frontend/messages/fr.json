@@ -111,7 +111,7 @@
   "titlebar_minimise": "Réduire",
   "titlebar_close": "Fermer",
   "health_title": "Les sites web ne sont pas bloqués",
-  "service_scope_notice": "Ce mode de service Windows écrit les domaines répertoriés et leurs hôtes www dans le fichier hosts et prend en charge les horaires hebdomadaires. Il applique aussi après 30 secondes les règles d’application activées par nom d’exécutable dans les listes existantes ; elles ne peuvent pas être modifiées ici, et une fermeture forcée peut faire perdre le travail non enregistré. Les sous-domaines plus profonds, chemins URL, mots-clés, chemins ou titres d’application et règles d’extension du navigateur ne sont pas pris en charge. DoH, VPN, proxys, autres navigateurs et accès administrateur local peuvent contourner ces règles.",
+  "service_scope_notice": "Ce mode de service Windows écrit les domaines répertoriés et leurs hôtes www dans le fichier hosts et prend en charge les horaires hebdomadaires. Il applique les règles activées par nom exact d’exécutable sur les listes actives, sauf celles liées à un quota par application ou à un quota partagé. Cet écran permet d’ajouter et de supprimer des noms exacts d’exécutables. Une application correspondante restée ouverte 30 secondes est fermée de force ; le travail non enregistré peut être perdu. Les sous-domaines plus profonds, chemins URL, mots-clés, chemins ou titres d’application et règles d’extension du navigateur ne sont pas pris en charge. DoH, VPN, proxys, autres navigateurs et accès administrateur local peuvent contourner ces règles.",
   "service_title": "Règles du service Windows",
   "service_description": "Gérez les listes bloquées par le service en arrière-plan.",
   "service_lists_title": "Listes de blocage",

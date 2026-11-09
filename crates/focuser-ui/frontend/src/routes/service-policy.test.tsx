@@ -67,6 +67,13 @@ beforeEach(() => {
           kind: "website_rule",
           data: { id: "new-rule", match_type: command.args.rule, enabled: true },
         };
+      case "add_app_rule":
+        return {
+          kind: "app_rule",
+          data: { id: "new-app-rule", match_type: command.args.rule, enabled: true },
+        };
+      case "remove_app_rule":
+        return { kind: "unit" };
       case "update_schedule":
         return { kind: "unit" };
       default:
@@ -103,6 +110,25 @@ describe("Windows service policy screen", () => {
       expect(send).toHaveBeenCalledWith({
         cmd: "add_website_rule",
         args: { list_id: "list-1", rule: { Domain: "new.example" } },
+      });
+    });
+  });
+
+  it("lets service mode add only exact executable-name app rules", async () => {
+    renderPolicy();
+    await screen.findByText("example.org");
+    fireEvent.click(screen.getByRole("tab", { name: "Applications" }));
+
+    expect(await screen.findByText("game.exe")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Application to block" }), {
+      target: { value: "editor.exe" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith({
+        cmd: "add_app_rule",
+        args: { list_id: "list-1", rule: { ExecutableName: "editor.exe" } },
       });
     });
   });

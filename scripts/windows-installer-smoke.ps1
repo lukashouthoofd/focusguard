@@ -55,6 +55,7 @@ $hostsMayHaveChanged = $false
 $safeToRestoreHosts = $false
 $legacyRegistrationSeeded = $false
 $legacyAutostartSeeded = $false
+$appProbeProcess = $null
 
 function Get-ProductService {
   Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
@@ -129,6 +130,30 @@ function Invoke-Probe([string] $Stage) {
   } finally {
     Remove-Item Env:\FOCUSGUARD_SCM_RUNTIME_TEST -ErrorAction SilentlyContinue
   }
+}
+
+function Assert-AppRuleEnforcement {
+  # scm_policy_probe.exe is configured as an exact app rule during the seed
+  # stage. Start its long-lived target mode only after the service has recovered
+  # so this checks real SCM-backed termination against the persisted rule.
+  $previousTestFlag = $env:FOCUSGUARD_SCM_RUNTIME_TEST
+  $env:FOCUSGUARD_SCM_RUNTIME_TEST = '1'
+  try {
+    $script:appProbeProcess = Start-Process -FilePath $probeExe -ArgumentList 'process-target' -PassThru -WindowStyle Hidden
+  } finally {
+    if ($null -eq $previousTestFlag) {
+      Remove-Item Env:\FOCUSGUARD_SCM_RUNTIME_TEST -ErrorAction SilentlyContinue
+    } else {
+      $env:FOCUSGUARD_SCM_RUNTIME_TEST = $previousTestFlag
+    }
+  }
+
+  if (-not $script:appProbeProcess.WaitForExit(45000)) {
+    Stop-Process -Id $script:appProbeProcess.Id -Force -ErrorAction SilentlyContinue
+    throw 'The service did not close the matching app process after its 30-second grace period.'
+  }
+  Write-Host 'The recovered service force-closed a matching executable after its 30-second grace period.'
+  $script:appProbeProcess = $null
 }
 
 function Invoke-NativeHeartbeat {
@@ -624,6 +649,8 @@ try {
   Invoke-NativeHeartbeat
   Invoke-Probe 'verify'
   Write-Host "SCM restarted the installed service as PID $($service.ProcessId) and restored the policy."
+  Assert-AppRuleEnforcement
+  Invoke-Probe 'verify'
 
   Start-HiddenAndWait $uninstallerPath @('/S')
   $null = Wait-ProductService 'Absent'
@@ -658,6 +685,9 @@ try {
 } finally {
   # The runner is disposable, but restore the real system file before the job
   # exits even when an assertion or installer step fails.
+  if ($appProbeProcess -and -not $appProbeProcess.HasExited) {
+    Stop-Process -Id $appProbeProcess.Id -Force -ErrorAction SilentlyContinue
+  }
   if ($hostsMayHaveChanged) {
     try {
       if ($uninstallerPath -and (Test-Path -LiteralPath $uninstallerPath)) {

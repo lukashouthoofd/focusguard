@@ -16,7 +16,7 @@ use focuser_app::{
     command::WebsiteRuleKind,
     protocol::{self, RequestEnvelope, ResponseEnvelope},
 };
-use focuser_common::types::WebsiteMatchType;
+use focuser_common::types::{AppMatchType, WebsiteMatchType};
 use focuser_core::{BlockEngine, Database};
 use tokio::{
     io::AsyncWriteExt, net::windows::named_pipe::NamedPipeServer, sync::Semaphore, task::JoinSet,
@@ -170,7 +170,7 @@ async fn handle_connection(
                 }
                 .into(),
                 message: if policy_enabled {
-                    "This service build only supports exact-domain policy commands.".into()
+                    "This service supports exact-domain websites, schedules, and exact executable-name app rules.".into()
                 } else {
                     "The Windows service smoke host currently supports only its version probe."
                         .into()
@@ -187,34 +187,62 @@ async fn handle_connection(
     pipe.flush().await
 }
 
-/// The first policy-enabled service mode owns durable exact-domain hosts
-/// enforcement. Other features remain on the desktop until their workers move
+/// The policy service owns exact-domain hosts enforcement and executable-name
+/// app rules. Other rule kinds remain on the desktop until their workers move
 /// behind the service boundary too.
 fn service_policy_command_allowed(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::ListBlockLists
-            | Command::CreateBlockList { .. }
-            | Command::DeleteBlockList { .. }
-            | Command::ToggleBlockList { .. }
-            | Command::AddWebsiteRule {
-                rule: WebsiteMatchType::Domain(_),
-                ..
-            }
-            | Command::RemoveWebsiteRule { .. }
-            | Command::BulkImportWebsites {
-                kind: WebsiteRuleKind::Domain,
-                ..
-            }
-            | Command::ClearAllWebsites
-            | Command::UpdateSchedule { .. }
-            | Command::GetBlockingHealth
-            | Command::GetExtensionRules
-            | Command::ExtensionHeartbeat { .. }
-            | Command::RecordExtensionAllowanceTick { .. }
-            | Command::RecordExtensionSharedActivityTick { .. }
-            | Command::ApplyBlocks
-    )
+    match command {
+        Command::AddAppRule {
+            rule: AppMatchType::ExecutableName(name),
+            ..
+        } => valid_service_executable_name(name),
+        Command::RemoveAppRule { .. } => true,
+        Command::AddAppRule { .. } => false,
+        _ => matches!(
+            command,
+            Command::ListBlockLists
+                | Command::CreateBlockList { .. }
+                | Command::DeleteBlockList { .. }
+                | Command::ToggleBlockList { .. }
+                | Command::AddWebsiteRule {
+                    rule: WebsiteMatchType::Domain(_),
+                    ..
+                }
+                | Command::RemoveWebsiteRule { .. }
+                | Command::BulkImportWebsites {
+                    kind: WebsiteRuleKind::Domain,
+                    ..
+                }
+                | Command::ClearAllWebsites
+                | Command::UpdateSchedule { .. }
+                | Command::GetBlockingHealth
+                | Command::GetExtensionRules
+                | Command::ExtensionHeartbeat { .. }
+                | Command::RecordExtensionAllowanceTick { .. }
+                | Command::RecordExtensionSharedActivityTick { .. }
+                | Command::ApplyBlocks
+        ),
+    }
+}
+
+/// A service app rule names one Windows image, never a path or wildcard. Keep
+/// the length within the limit of a Windows process image name and reject
+/// characters that would turn an image name into a path or glob expression.
+fn valid_service_executable_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.trim() == name
+        && name.encode_utf16().count() <= 255
+        && !name.ends_with(' ')
+        && !name.ends_with('.')
+        && name != "."
+        && name != ".."
+        && !name.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+        })
 }
 
 fn create_pipe(
@@ -735,7 +763,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_pipe_rejects_rules_the_hosts_writer_cannot_enforce() {
+    async fn policy_pipe_accepts_only_rules_its_workers_can_enforce() {
         let name = test_pipe_name();
         let owner_sid = current_user_sid_string().unwrap();
         let service_sid = current_user_sid_string().unwrap();
@@ -839,10 +867,47 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(
-            app_rule_response.result.unwrap_err().code,
-            "service_command_not_supported"
-        );
+        let CommandResult::AppRule(rule) = app_rule_response.result.unwrap() else {
+            panic!("service should accept exact executable-name rules");
+        };
+        assert!(matches!(
+            &rule.match_type,
+            AppMatchType::ExecutableName(name) if name == "game.exe"
+        ));
+
+        for name in [
+            "",
+            " game.exe",
+            r"C:\\Games\\game.exe",
+            "*.exe",
+            "game.exe.",
+        ] {
+            assert!(!service_policy_command_allowed(&Command::AddAppRule {
+                list_id: list.id,
+                rule: AppMatchType::ExecutableName(name.into()),
+            }));
+        }
+        assert!(!service_policy_command_allowed(&Command::AddAppRule {
+            list_id: list.id,
+            rule: AppMatchType::ExecutablePath(r"C:\\Games\\game.exe".into()),
+        }));
+        assert!(!service_policy_command_allowed(&Command::AddAppRule {
+            list_id: list.id,
+            rule: AppMatchType::ExecutableName("x".repeat(256)),
+        }));
+
+        let removed = send_policy_command(
+            &name,
+            &owner_sid,
+            &service_sid,
+            Arc::clone(&context),
+            Command::RemoveAppRule {
+                list_id: list.id,
+                rule_id: rule.id,
+            },
+        )
+        .await;
+        assert!(matches!(removed.result.unwrap(), CommandResult::Unit));
 
         assert!(!service_policy_command_allowed(&Command::RemoveBlocks));
         assert!(service_policy_command_allowed(&Command::GetExtensionRules));
@@ -855,9 +920,9 @@ mod tests {
             list_id: list.id,
             rule: WebsiteMatchType::Domain("example.com".into()),
         }));
-        assert!(!service_policy_command_allowed(&Command::AddAppRule {
+        assert!(service_policy_command_allowed(&Command::AddAppRule {
             list_id: list.id,
-            rule: focuser_common::types::AppMatchType::ExecutableName("game.exe".into()),
+            rule: AppMatchType::ExecutableName("game.exe".into()),
         }));
         assert!(!service_policy_command_allowed(&Command::AddAppRule {
             list_id: list.id,

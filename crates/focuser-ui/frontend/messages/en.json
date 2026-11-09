@@ -176,7 +176,7 @@
   "titlebar_restore": "Restore",
   "titlebar_close": "Close",
   "health_title": "Websites are not blocked",
-  "service_scope_notice": "This Windows service mode writes listed domains and their www hosts to the hosts file and supports weekly schedules. It also enforces enabled executable-name app rules from existing lists after 30 seconds; app rules cannot be edited here, and forced termination may lose unsaved work. Deeper subdomains, URL paths, keywords, app paths or titles, and browser-extension rules are unsupported. DoH, VPNs, proxies, alternate browsers, and local administrator access can bypass these rules.",
+  "service_scope_notice": "This Windows service mode writes listed domains and their www hosts to the hosts file and supports weekly schedules. It enforces enabled exact executable-name app rules on active lists, except rules with per-app allowances and lists with shared allowances. This screen can add and remove exact executable names. A matching app that stays open for 30 seconds is force-closed; unsaved work may be lost. Deeper subdomains, URL paths, keywords, app paths or titles, and browser-extension rules are unsupported. DoH, VPNs, proxies, alternate browsers, and local administrator access can bypass these rules.",
   "service_title": "Windows service policy",
   "service_description": "Manage block lists enforced by the background service.",
   "service_lists_title": "Block lists",

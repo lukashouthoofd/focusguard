@@ -111,7 +111,7 @@
   "titlebar_minimise": "Riduci a icona",
   "titlebar_close": "Chiudi",
   "health_title": "I siti web non vengono bloccati",
-  "service_scope_notice": "Questa modalità del servizio Windows scrive i domini elencati e i relativi host www nel file hosts e supporta gli orari settimanali. Dopo 30 secondi applica anche le regole abilitate per nome eseguibile già presenti nelle liste; qui non è possibile modificarle e la chiusura forzata può far perdere il lavoro non salvato. Sottodomini più profondi, percorsi URL, parole chiave, percorsi o titoli delle app e regole delle estensioni del browser non sono supportati. DoH, VPN, proxy, altri browser e l’accesso di un amministratore locale possono aggirare queste regole.",
+  "service_scope_notice": "Questa modalità del servizio Windows scrive i domini elencati e i relativi host www nel file hosts e supporta gli orari settimanali. Applica le regole abilitate con nome eseguibile esatto nelle liste attive, tranne quelle con limiti per app o liste con limiti condivisi. In questa schermata puoi aggiungere e rimuovere nomi eseguibili esatti. Se un’app corrispondente resta aperta per 30 secondi, viene chiusa forzatamente; il lavoro non salvato può andare perso. Sottodomini più profondi, percorsi URL, parole chiave, percorsi o titoli delle app e regole delle estensioni del browser non sono supportati. DoH, VPN, proxy, altri browser e l’accesso di un amministratore locale possono aggirare queste regole.",
   "service_title": "Policy del servizio Windows",
   "service_description": "Gestisci le liste bloccate dal servizio in background.",
   "service_lists_title": "Liste di blocco",

@@ -109,7 +109,7 @@
   "titlebar_minimise": "Minimieren",
   "titlebar_close": "Schließen",
   "health_title": "Websites werden nicht blockiert",
-  "service_scope_notice": "Dieser Windows-Dienstmodus trägt aufgeführte Domains und ihre www-Hosts in die hosts-Datei ein und unterstützt Wochenpläne. Aktivierte App-Regeln aus bestehenden Listen, die auf ausführbaren Namen beruhen, werden nach 30 Sekunden durchgesetzt; App-Regeln lassen sich hier nicht bearbeiten, und das erzwungene Beenden kann ungespeicherte Arbeit kosten. Tiefere Subdomains, URL-Pfade, Schlüsselwörter, App-Pfade oder Fenstertitel sowie Browser-Erweiterungsregeln werden nicht unterstützt. DoH, VPNs, Proxys, andere Browser und lokaler Administratorzugriff können diese Regeln umgehen.",
+  "service_scope_notice": "Dieser Windows-Dienstmodus trägt aufgeführte Domains und ihre www-Hosts in die hosts-Datei ein und unterstützt Wochenpläne. Er setzt aktivierte Regeln mit exaktem ausführbarem Namen in aktiven Listen durch, außer bei App-Regeln mit eigenem Kontingent oder Listen mit gemeinsamem Kontingent. Auf dieser Seite können Sie exakte ausführbare Namen hinzufügen und entfernen. Bleibt eine passende App 30 Sekunden geöffnet, wird sie zwangsweise beendet; ungespeicherte Arbeit kann verloren gehen. Tiefere Subdomains, URL-Pfade, Schlüsselwörter, App-Pfade oder Fenstertitel sowie Browser-Erweiterungsregeln werden nicht unterstützt. DoH, VPNs, Proxys, andere Browser und lokaler Administratorzugriff können diese Regeln umgehen.",
   "service_title": "Windows-Dienstrichtlinien",
   "service_description": "Blocklisten verwalten, die vom Hintergrunddienst durchgesetzt werden.",
   "service_lists_title": "Blocklisten",

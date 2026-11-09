@@ -1,4 +1,4 @@
-import { Globe, ListChecks, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { AppWindow, Globe, ListChecks, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { type FormEvent, useMemo, useState } from "react";
 import type { BlockList, WebsiteRule } from "@/bindings";
 import { RuleTable } from "@/components/rule-table";
@@ -13,16 +13,18 @@ import { Page } from "@/components/ui/page";
 import { Switch } from "@/components/ui/switch";
 import { Tabs } from "@/components/ui/tabs";
 import {
+  useAddAppRule,
   useAddWebsiteRule,
   useBlockingHealth,
   useBlockLists,
   useCreateBlockList,
   useDeleteBlockList,
+  useRemoveAppRule,
   useRemoveWebsiteRule,
   useToggleBlockList,
   useUpdateSchedule,
 } from "@/lib/commands";
-import { describeWebsite } from "@/lib/match-types";
+import { describeApp, describeWebsite } from "@/lib/match-types";
 import { type CellKey, cellsToSlots, DAYS, HOURS, slotsToCells } from "@/lib/schedule";
 import { m } from "@/paraglide/messages.js";
 
@@ -43,7 +45,7 @@ export function ServicePolicy() {
   const create = useCreateBlockList();
   const [name, setName] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [panel, setPanel] = useState<"websites" | "schedule">("websites");
+  const [panel, setPanel] = useState<"websites" | "applications" | "schedule">("websites");
 
   const selected = lists.data?.find((list) => list.id === selectedId) ?? lists.data?.[0] ?? null;
 
@@ -124,11 +126,14 @@ export function ServicePolicy() {
                 onChange={setPanel}
                 items={[
                   { id: "websites", label: m.websites_title() },
+                  { id: "applications", label: m.apps_title() },
                   { id: "schedule", label: m.schedule_title() },
                 ]}
               />
               {panel === "websites" ? (
                 <DomainRules list={selected} />
+              ) : panel === "applications" ? (
+                <ApplicationRules list={selected} />
               ) : (
                 <ServiceSchedule key={selected.id} list={selected} />
               )}
@@ -144,6 +149,62 @@ export function ServicePolicy() {
         </section>
       </div>
     </Page>
+  );
+}
+
+function ApplicationRules({ list }: { list: BlockList }) {
+  const [value, setValue] = useState("");
+  const add = useAddAppRule();
+  const remove = useRemoveAppRule();
+  const rows = list.applications.map((rule) => ({ id: rule.id, ...describeApp(rule.match_type) }));
+
+  function onSubmit(event: FormEvent) {
+    event.preventDefault();
+    const executableName = value.trim();
+    if (!executableName) return;
+    add.mutate(
+      { listId: list.id, rule: { ExecutableName: executableName } },
+      { onSuccess: () => setValue("") },
+    );
+  }
+
+  return (
+    <>
+      <SectionHeading title={m.apps_title()} />
+      <Card className="mb-4" padding="md" elevation="raised">
+        <p className="mb-3 text-muted-foreground text-sm">{m.apps_description()}</p>
+        <form onSubmit={onSubmit} className="flex gap-2">
+          <Input
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder="discord.exe"
+            aria-label={m.apps_value_label()}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+          <Button type="submit" icon={<Plus />} disabled={!value.trim() || add.isPending}>
+            {m.apps_add()}
+          </Button>
+        </form>
+        <InlineError error={add.error} />
+      </Card>
+
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={<AppWindow />}
+          title={m.apps_empty_title()}
+          description={m.apps_empty_description({ example: "discord.exe" })}
+        />
+      ) : (
+        <RuleTable
+          rows={rows}
+          noun={m.noun_application()}
+          onRemove={(ruleId) => remove.mutate({ listId: list.id, ruleId })}
+        />
+      )}
+      <InlineError error={remove.error} />
+    </>
   );
 }
 

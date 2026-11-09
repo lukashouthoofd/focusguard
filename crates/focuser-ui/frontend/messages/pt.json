@@ -111,7 +111,7 @@
   "titlebar_minimise": "Minimizar",
   "titlebar_close": "Fechar",
   "health_title": "Os sites não estão sendo bloqueados",
-  "service_scope_notice": "Este modo de serviço do Windows grava os domínios listados e seus hosts www no arquivo hosts e aceita horários semanais. Após 30 segundos, também aplica as regras habilitadas por nome de executável já existentes nas listas; elas não podem ser editadas aqui, e o encerramento forçado pode causar perda de trabalho não salvo. Subdomínios mais profundos, caminhos de URL, palavras-chave, caminhos ou títulos de aplicativos e regras de extensões do navegador não são compatíveis. DoH, VPNs, proxies, outros navegadores e o acesso de administrador local podem contornar essas regras.",
+  "service_scope_notice": "Este modo de serviço do Windows grava os domínios listados e seus hosts www no arquivo hosts e aceita horários semanais. Aplica regras habilitadas por nome exato do executável em listas ativas, exceto regras com limites por aplicativo e listas com limites compartilhados. Nesta tela, você pode adicionar e remover nomes exatos de executáveis. Se um aplicativo correspondente continuar aberto por 30 segundos, será encerrado à força; o trabalho não salvo pode ser perdido. Subdomínios mais profundos, caminhos de URL, palavras-chave, caminhos ou títulos de aplicativos e regras de extensões do navegador não são compatíveis. DoH, VPNs, proxies, outros navegadores e o acesso de administrador local podem contornar estas regras.",
   "service_title": "Política do serviço do Windows",
   "service_description": "Gerencie as listas bloqueadas pelo serviço em segundo plano.",
   "service_lists_title": "Listas de bloqueio",
