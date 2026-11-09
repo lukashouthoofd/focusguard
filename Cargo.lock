@@ -1518,6 +1518,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-specta",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

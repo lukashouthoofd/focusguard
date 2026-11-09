@@ -6,6 +6,7 @@
 - Security review corrected shared `/Library/Application Support` permission mutation, delayed owner-UID persistence until a valid user home exists, kept service mode selected when an installation marker survives unregistration, and rejected group/world-readable SQLite databases and WAL/SHM files.
 - On the Windows development host, `cargo test --workspace --locked --quiet`, strict workspace Clippy, Rust formatting, and diff checks passed; the frontend passed 289 tests, lint, typecheck, and production build. These host checks do not compile or execute macOS-only code.
 - Pending GitHub CI on Intel and Apple Silicon macOS runners will compile/test the Mac code and package unsigned DMGs. The unsigned artifacts are not release-ready: SMAppService requires an acceptable app/helper code signature, and signing/notarization credentials are not configured. No real macOS VM or device lifecycle test has been run; approval, disable, reboot, crash recovery, migration, and hosts cleanup remain unverified.
+- The first pushed CI run exposed missing `tempfile` in the macOS UI test build and an unavailable service-client dependency in Linux UI builds. The follow-up declares both dependencies on the appropriate targets and limits the Unix-socket host module to macOS production/Linux test builds; rerun results are pending.
 - PublikHQ remains a SaaS listing destination; FocusGuard has no feature that needs a Publik API integration.
 
 ## 2026-11-09 — macOS enforcement core groundwork

@@ -3,7 +3,7 @@
 #[path = "enforcement.rs"]
 pub mod enforcement;
 
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 pub mod unix_socket;
 
 #[cfg(windows)]
