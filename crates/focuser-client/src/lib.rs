@@ -497,8 +497,6 @@ fn verify_server_pid(
 
 #[cfg(all(test, unix))]
 mod unix_tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use focuser_app::{
         Command, CommandErrorPayload,
         protocol::{self, ResponseEnvelope},
@@ -508,13 +506,10 @@ mod unix_tests {
     use super::{ClientError, execute_unix};
 
     fn socket_path() -> std::path::PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
         std::env::temp_dir().join(format!(
-            "focusguard-client-{}-{nonce}.sock",
-            std::process::id()
+            "focusguard-client-{}-{}.sock",
+            std::process::id(),
+            uuid::Uuid::new_v4()
         ))
     }
 
