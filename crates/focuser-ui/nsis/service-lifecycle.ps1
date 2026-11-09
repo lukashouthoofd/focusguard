@@ -581,9 +581,13 @@ function Set-ProgramDataAcl {
   $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
   Write-LifecycleTrace "Setting ProgramData ACL as $($identity.Name) ($($identity.User.Value)); elevated administrator token=$isAdministrator"
   New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+  # Protect the directory itself and let its inheritable ACEs flow to files.
+  # Applying /inheritance:r recursively strips child inheritance; these OI/CI
+  # grants are intended for the directory and its descendants, not as direct
+  # file permissions.
   Invoke-Checked "$env:SystemRoot\System32\icacls.exe" @(
     $dataDir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F',
-    '*S-1-5-32-544:(OI)(CI)F', '/T', '/C'
+    '*S-1-5-32-544:(OI)(CI)F', '/C'
   )
   $stateAcl = if (Test-Path -LiteralPath $installStatePath -PathType Leaf) {
     Get-PathAclSummary $installStatePath
@@ -705,6 +709,9 @@ function Configure-Service([string] $OwnerSid) {
     if ($registered) { $backedUpDatabase = Backup-ExistingDatabase }
 
     New-Item -ItemType Directory -Force -Path $serviceInstallDir | Out-Null
+    # Existing binaries inherit this protected directory ACL. Do not use /T:
+    # recursive inheritance removal can leave current files without effective
+    # read/execute ACEs when the grants carry OI/CI inheritance flags.
     Invoke-Checked "$env:SystemRoot\System32\icacls.exe" @(
       $serviceInstallDir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F',
       '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-32-545:(OI)(CI)RX'
