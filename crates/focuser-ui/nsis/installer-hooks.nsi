@@ -13,6 +13,11 @@
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\service-lifecycle.ps1" -Mode ${mode} -InstallDir "$INSTDIR" -DeleteData "$DeleteAppDataCheckboxState"'
   Pop $0
   ${If} $0 != 0
+    IfSilent fg_lifecycle_${mode}_silent_error fg_lifecycle_${mode}_interactive_error
+    fg_lifecycle_${mode}_silent_error:
+      DetailPrint "FocusGuard could not ${mode}; the lifecycle helper exited with code $0."
+      Abort
+    fg_lifecycle_${mode}_interactive_error:
     MessageBox MB_ICONSTOP|MB_OK "FocusGuard could not ${mode}. Exit code: $0. The installer stopped so it does not leave the service half-configured."
     Abort
   ${EndIf}
@@ -22,6 +27,11 @@
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\service-lifecycle.ps1" -Mode ${mode} -InstallDir "$INSTDIR" -DeleteData "$DeleteAppDataCheckboxState"'
   Pop $0
   ${If} $0 != 0
+    IfSilent fg_installed_lifecycle_${mode}_silent_error fg_installed_lifecycle_${mode}_interactive_error
+    fg_installed_lifecycle_${mode}_silent_error:
+      DetailPrint "FocusGuard could not ${mode}; the lifecycle helper exited with code $0."
+      Abort
+    fg_installed_lifecycle_${mode}_interactive_error:
     MessageBox MB_ICONSTOP|MB_OK "FocusGuard could not ${mode}. Exit code: $0. The installer stopped so it does not leave the service half-configured."
     Abort
   ${EndIf}

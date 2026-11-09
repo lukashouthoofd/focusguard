@@ -655,8 +655,8 @@ function Configure-Service([string] $OwnerSid) {
     if ($registered) {
       Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('config', $serviceName, 'binPath=', $imagePath, 'start=', 'auto', 'obj=', 'LocalSystem')
     } else {
+      Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('create', $serviceName, 'binPath=', $imagePath, 'start=', 'auto', 'obj=', 'LocalSystem', 'DisplayName=', 'FocusGuard')
       $createdService = $true
-      Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('create', $serviceName, 'binPath=', $imagePath, 'start=', 'auto', 'obj=', 'LocalSystem', 'DisplayName=', 'FocusGuard Policy Service')
     }
     Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('sidtype', $serviceName, 'unrestricted')
     Invoke-Checked "$env:SystemRoot\System32\sc.exe" @('failure', $serviceName, 'reset=', '0', 'actions=', 'restart/5000/restart/5000/restart/5000')
