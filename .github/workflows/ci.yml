@@ -244,6 +244,16 @@ jobs:
 
       # The v2.10.1 x86_64 Darwin archive contains an ARM64 Mach-O binary; build
       # from source on Intel until the upstream asset is corrected.
+      - name: Cache Intel Tauri CLI
+        if: matrix.target == 'x86_64-apple-darwin'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-tauri
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: tauri-cli-x86_64-apple-darwin-v2.10.1
+
       - name: Install Tauri CLI from source on Intel
         if: matrix.target == 'x86_64-apple-darwin'
         run: cargo install tauri-cli --locked --version 2.10.1

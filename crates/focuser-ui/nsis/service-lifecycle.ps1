@@ -44,6 +44,16 @@ function Write-LifecycleTrace([string] $Message) {
   [IO.File]::AppendAllText($tracePath, $line, [Text.UTF8Encoding]::new($false))
 }
 
+function Get-PathAclSummary([string] $Path) {
+  try {
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $sddl = $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
+    return "Owner=$($acl.Owner); SDDL=$sddl"
+  } catch {
+    return "Unavailable: $_"
+  }
+}
+
 function Invoke-Checked([string] $FilePath, [string[]] $Arguments, [int[]] $AllowedExitCodes = @(0)) {
   Write-LifecycleTrace "Running $([IO.Path]::GetFileName($FilePath)) $($Arguments -join ' ')"
   $output = & $FilePath @Arguments 2>&1
@@ -415,6 +425,8 @@ function Get-InstallState {
     $state.owner_sid = [Security.Principal.SecurityIdentifier]::new([string]$state.owner_sid).Value
     return $state
   } catch {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    Write-LifecycleTrace "Install state read failed as $($identity.Name) ($($identity.User.Value)); ACL: $(Get-PathAclSummary $installStatePath)"
     throw "The FocusGuard install state is unreadable; preserve '$installStatePath' and repair the installation before retrying: $_"
   }
 }
@@ -563,11 +575,21 @@ function Stop-ServiceForInstall([string] $OwnerSid) {
 }
 
 function Set-ProgramDataAcl {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+  $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  Write-LifecycleTrace "Setting ProgramData ACL as $($identity.Name) ($($identity.User.Value)); elevated administrator token=$isAdministrator"
   New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
   Invoke-Checked "$env:SystemRoot\System32\icacls.exe" @(
     $dataDir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F',
     '*S-1-5-32-544:(OI)(CI)F', '/T', '/C'
   )
+  $stateAcl = if (Test-Path -LiteralPath $installStatePath -PathType Leaf) {
+    Get-PathAclSummary $installStatePath
+  } else {
+    'not created yet'
+  }
+  Write-LifecycleTrace "ProgramData ACL after update: directory=$(Get-PathAclSummary $dataDir); state=$stateAcl"
 }
 
 function Copy-InitialDatabase([string] $OwnerSid) {
