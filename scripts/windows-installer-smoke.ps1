@@ -31,7 +31,8 @@ $ownerSid = $identity.User.Value
 $legacyManifestDir = Join-Path $env:APPDATA 'focuser\FocusGuard\data\native-messaging'
 $legacyChromeManifest = Join-Path $legacyManifestDir 'com.focuser.native.json'
 $legacyFirefoxManifest = Join-Path $legacyManifestDir 'com.focuser.native.firefox.json'
-$legacyNativeExecutable = Join-Path $env:RUNNER_TEMP 'legacy-focuser-native.exe'
+# The migration only removes legacy manifests that identify FocusGuard's native-host executable.
+$legacyNativeExecutable = Join-Path $env:RUNNER_TEMP 'legacy\FocusGuard\focuser-native.exe'
 $legacyUiExecutable = Join-Path $env:LOCALAPPDATA 'FocusGuard\focusguard-ui.exe'
 $nativeRegistrationSpecs = @(
   [pscustomobject]@{ Key = 'Software\Google\Chrome\NativeMessagingHosts\com.focuser.native'; Manifest = $legacyChromeManifest },

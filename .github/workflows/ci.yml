@@ -243,7 +243,26 @@ jobs:
           cp "target/${{ matrix.target }}/release/focuser-cli" "crates/focuser-ui/binaries/focuser-cli-${{ matrix.target }}"
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked --version 2.10.1
+        shell: bash
+        env:
+          TAURI_TARGET: ${{ matrix.target }}
+        run: |
+          case "$TAURI_TARGET" in
+            aarch64-apple-darwin) sha256=f89d7d9485d3a6a6bcbc88275b0bddea61fe582ca636fc02c286994af1f6e36b ;;
+            x86_64-apple-darwin) sha256=5e37b09604cf4d16dc6e83423e728e10f376b737f6443d1dd3121b9f8f050a1b ;;
+            *) echo "Unsupported Tauri CLI target: $TAURI_TARGET" >&2; exit 1 ;;
+          esac
+          asset="cargo-tauri-${TAURI_TARGET}.zip"
+          archive="$RUNNER_TEMP/$asset"
+          url="https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.10.1/$asset"
+          curl --fail --location --silent --show-error "$url" --output "$archive"
+          echo "$sha256  $archive" | shasum -a 256 --check --status
+          install_dir="$RUNNER_TEMP/tauri-cli"
+          mkdir -p "$install_dir"
+          unzip -q "$archive" -d "$install_dir"
+          chmod +x "$install_dir/cargo-tauri"
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/cargo-tauri" --version
 
       - name: Build unsigned DMG without updater artifacts
         working-directory: crates/focuser-ui
@@ -295,7 +314,22 @@ jobs:
           Copy-Item extension/identity.json crates/focuser-ui/resources/extension-identity.json
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked --version 2.10.1
+        shell: pwsh
+        run: |
+          $asset = 'cargo-tauri-x86_64-pc-windows-msvc.zip'
+          $archive = Join-Path $env:RUNNER_TEMP $asset
+          $url = "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.10.1/$asset"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $expectedHash = '50a3ed1c43f75ea3b6e7233a52d8a7c994cfffd98d8545ff397db8b464338d9c'
+          $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) { throw "Tauri CLI archive hash mismatch: $actualHash" }
+          $installDir = Join-Path $env:RUNNER_TEMP 'tauri-cli'
+          New-Item -ItemType Directory -Force $installDir | Out-Null
+          Expand-Archive -LiteralPath $archive -DestinationPath $installDir -Force
+          $tauriCli = Join-Path $installDir 'cargo-tauri.exe'
+          if (-not (Test-Path -LiteralPath $tauriCli)) { throw 'The verified Tauri CLI archive has no cargo-tauri.exe.' }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $installDir
+          & $tauriCli --version
 
       - name: Build unsigned NSIS package without updater artifacts
         working-directory: crates/focuser-ui
