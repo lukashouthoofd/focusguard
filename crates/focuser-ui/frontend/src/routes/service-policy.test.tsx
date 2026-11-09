@@ -131,6 +131,14 @@ describe("Windows service policy screen", () => {
         args: { list_id: "list-1", rule: { ExecutableName: "editor.exe" } },
       });
     });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove game.exe" }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith({
+        cmd: "remove_app_rule",
+        args: { list_id: "list-1", rule_id: "app-1" },
+      });
+    });
   });
 
   it("saves a weekly schedule for the selected list through the service command", async () => {

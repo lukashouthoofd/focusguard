@@ -133,7 +133,7 @@ export function ServicePolicy() {
               {panel === "websites" ? (
                 <DomainRules list={selected} />
               ) : panel === "applications" ? (
-                <ApplicationRules list={selected} />
+                <ApplicationRules key={selected.id} list={selected} />
               ) : (
                 <ServiceSchedule key={selected.id} list={selected} />
               )}
@@ -191,11 +191,7 @@ function ApplicationRules({ list }: { list: BlockList }) {
       </Card>
 
       {rows.length === 0 ? (
-        <EmptyState
-          icon={<AppWindow />}
-          title={m.apps_empty_title()}
-          description={m.apps_empty_description({ example: "discord.exe" })}
-        />
+        <EmptyState icon={<AppWindow />} title={m.apps_empty_title()} />
       ) : (
         <RuleTable
           rows={rows}
