@@ -67,6 +67,8 @@ beforeEach(() => {
           kind: "website_rule",
           data: { id: "new-rule", match_type: command.args.rule, enabled: true },
         };
+      case "update_schedule":
+        return { kind: "unit" };
       default:
         throw new CommandError({ code: "unexpected_command", message: command.cmd });
     }
@@ -80,7 +82,8 @@ describe("Windows service policy screen", () => {
     expect(await screen.findByText("example.org")).toBeInTheDocument();
     expect(screen.queryByText("casino")).not.toBeInTheDocument();
     expect(screen.queryByText("inactive.example")).not.toBeInTheDocument();
-    expect(screen.getByText("Not enforced: 4")).toBeInTheDocument();
+    expect(screen.getByText("Not enforced: 3")).toBeInTheDocument();
+    expect(screen.getByText("1 app")).toBeInTheDocument();
     expect(send.mock.calls.map(([command]) => (command as Command).cmd).sort()).toEqual([
       "get_blocking_health",
       "list_block_lists",
@@ -102,5 +105,39 @@ describe("Windows service policy screen", () => {
         args: { list_id: "list-1", rule: { Domain: "new.example" } },
       });
     });
+  });
+
+  it("saves a weekly schedule for the selected list through the service command", async () => {
+    renderPolicy();
+    await screen.findByText("example.org");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Schedule" }));
+    fireEvent.click(screen.getByRole("tab", { name: "On a schedule" }));
+    fireEvent.click(screen.getByTitle("Toggle every hour on Mon"));
+    fireEvent.click(screen.getByRole("button", { name: "Save schedule" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith({
+        cmd: "update_schedule",
+        args: {
+          list_id: "list-1",
+          slots: [{ day: "Mon", start: "00:00:00", end: "00:00:00" }],
+          always_active: false,
+        },
+      });
+    });
+  });
+
+  it("does not save an empty custom schedule that the service treats as always active", async () => {
+    renderPolicy();
+    await screen.findByText("example.org");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Schedule" }));
+    fireEvent.click(screen.getByRole("tab", { name: "On a schedule" }));
+
+    expect(screen.getByRole("button", { name: "Save schedule" })).toBeDisabled();
+    expect(
+      screen.getByText("Select at least one hour. An empty schedule means always active."),
+    ).toBeInTheDocument();
   });
 });

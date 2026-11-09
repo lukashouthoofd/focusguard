@@ -4,9 +4,10 @@
 use std::env;
 
 use anyhow::bail;
+use chrono::{NaiveTime, Weekday};
 use focuser_app::{Command, CommandResult};
 use focuser_client::execute;
-use focuser_common::types::WebsiteMatchType;
+use focuser_common::types::{TimeSlot, WebsiteMatchType};
 
 const LIST_NAME: &str = "FocusGuard SCM recovery CI";
 const TEST_DOMAIN: &str = "focuser-scm-recovery.invalid";
@@ -53,9 +54,24 @@ async fn seed() -> anyhow::Result<()> {
         rule: WebsiteMatchType::Domain(DOH_TEST_DOMAIN.into()),
     })
     .await?;
-    println!(
-        "Authenticated service IPC created exact-domain rules for {TEST_DOMAIN} and {DOH_TEST_DOMAIN}."
-    );
+    execute(Command::UpdateSchedule {
+        list_id: list.id,
+        slots: [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+            Weekday::Sat,
+            Weekday::Sun,
+        ]
+        .into_iter()
+        .map(|day| TimeSlot::new(day, NaiveTime::MIN, NaiveTime::MIN))
+        .collect(),
+        always_active: false,
+    })
+    .await?;
+    println!("Authenticated service IPC created exact-domain rules and a full-week schedule.");
     Ok(())
 }
 
@@ -78,10 +94,18 @@ async fn verify() -> anyhow::Result<()> {
             bail!("service did not return the persisted exact-domain rule for {domain}");
         }
     }
+    let Some(schedule) = &list.schedule else {
+        bail!("service did not persist the full-week CI schedule");
+    };
+    if schedule.time_slots.len() != 7 || !list.is_effectively_active() {
+        bail!("service did not keep the full-week CI schedule active");
+    }
 
     check_extension_presence().await?;
 
-    println!("Authenticated service IPC confirms both exact-domain rules are persisted.");
+    println!(
+        "Authenticated service IPC confirms both domain rules and the schedule are persisted and active."
+    );
     Ok(())
 }
 

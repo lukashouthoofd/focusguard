@@ -1474,6 +1474,7 @@ name = "focuser-service"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "focuser-app",
  "focuser-client",
  "focuser-common",

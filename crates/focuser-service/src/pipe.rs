@@ -846,6 +846,11 @@ mod tests {
 
         assert!(!service_policy_command_allowed(&Command::RemoveBlocks));
         assert!(service_policy_command_allowed(&Command::GetExtensionRules));
+        assert!(service_policy_command_allowed(&Command::UpdateSchedule {
+            list_id: list.id,
+            slots: vec![],
+            always_active: true,
+        }));
         assert!(service_policy_command_allowed(&Command::AddWebsiteRule {
             list_id: list.id,
             rule: WebsiteMatchType::Domain("example.com".into()),

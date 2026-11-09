@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 focuser-common.workspace = true
 focuser-app.workspace = true
 focuser-core.workspace = true

@@ -2,6 +2,7 @@ import { Globe, ListChecks, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { type FormEvent, useMemo, useState } from "react";
 import type { BlockList, WebsiteRule } from "@/bindings";
 import { RuleTable } from "@/components/rule-table";
+import { ScheduleGrid } from "@/components/schedule-grid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, EmptyState, PageHeader } from "@/components/ui/card";
@@ -10,6 +11,7 @@ import { InlineError, QueryState } from "@/components/ui/feedback";
 import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
 import { Switch } from "@/components/ui/switch";
+import { Tabs } from "@/components/ui/tabs";
 import {
   useAddWebsiteRule,
   useBlockingHealth,
@@ -18,12 +20,20 @@ import {
   useDeleteBlockList,
   useRemoveWebsiteRule,
   useToggleBlockList,
+  useUpdateSchedule,
 } from "@/lib/commands";
 import { describeWebsite } from "@/lib/match-types";
+import { type CellKey, cellsToSlots, DAYS, HOURS, slotsToCells } from "@/lib/schedule";
 import { m } from "@/paraglide/messages.js";
+
+const WEEK_HOURS = DAYS.length * HOURS.length;
 
 function isDomainRule(rule: WebsiteRule): rule is WebsiteRule & { match_type: { Domain: string } } {
   return typeof rule.match_type === "object" && "Domain" in rule.match_type;
+}
+
+function isExecutableNameRule(rule: BlockList["applications"][number]) {
+  return typeof rule.match_type === "object" && "ExecutableName" in rule.match_type;
 }
 
 /** The deliberately small policy surface supported by the Windows service. */
@@ -33,6 +43,7 @@ export function ServicePolicy() {
   const create = useCreateBlockList();
   const [name, setName] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [panel, setPanel] = useState<"websites" | "schedule">("websites");
 
   const selected = lists.data?.find((list) => list.id === selectedId) ?? lists.data?.[0] ?? null;
 
@@ -106,7 +117,22 @@ export function ServicePolicy() {
 
         <section className="min-w-0">
           {selected ? (
-            <DomainRules list={selected} />
+            <>
+              <Tabs
+                className="mb-4"
+                value={panel}
+                onChange={setPanel}
+                items={[
+                  { id: "websites", label: m.websites_title() },
+                  { id: "schedule", label: m.schedule_title() },
+                ]}
+              />
+              {panel === "websites" ? (
+                <DomainRules list={selected} />
+              ) : (
+                <ServiceSchedule key={selected.id} list={selected} />
+              )}
+            </>
           ) : (
             <>
               <SectionHeading title={m.websites_title()} />
@@ -118,6 +144,80 @@ export function ServicePolicy() {
         </section>
       </div>
     </Page>
+  );
+}
+
+function sameCells(left: Set<CellKey>, right: Set<CellKey>) {
+  return left.size === right.size && [...left].every((cell) => right.has(cell));
+}
+
+function ServiceSchedule({ list }: { list: BlockList }) {
+  const save = useUpdateSchedule();
+  const saved = useMemo(() => slotsToCells(list.schedule?.time_slots ?? []), [list.schedule]);
+  const alwaysActive = list.schedule === null;
+  const [draft, setDraft] = useState<Set<CellKey>>(() => saved);
+  const [mode, setMode] = useState<"always" | "scheduled">(() =>
+    alwaysActive ? "always" : "scheduled",
+  );
+
+  const dirty = mode === "always" ? !alwaysActive : alwaysActive || !sameCells(draft, saved);
+  const hasAllowanceOrScheduledLock =
+    list.scheduled_protection !== null || list.shared_allowance !== null;
+  const leavesGap = mode === "scheduled" && draft.size > 0 && draft.size < WEEK_HOURS;
+  const emptySchedule = mode === "scheduled" && draft.size === 0;
+  const needsGap = hasAllowanceOrScheduledLock && !leavesGap && !emptySchedule;
+  const saveDisabled = !dirty || save.isPending || needsGap || emptySchedule;
+
+  function commit() {
+    if (!dirty || needsGap || emptySchedule) return;
+    save.mutate({
+      listId: list.id,
+      slots: mode === "always" ? [] : cellsToSlots(draft),
+      alwaysActive: mode === "always",
+    });
+  }
+
+  return (
+    <>
+      <SectionHeading title={m.schedule_title()} />
+      <Card className="mb-4" padding="md" elevation="raised">
+        <div className="flex flex-col gap-4">
+          <Tabs
+            value={mode}
+            onChange={setMode}
+            items={[
+              { id: "always", label: m.schedule_mode_always() },
+              { id: "scheduled", label: m.schedule_mode_scheduled() },
+            ]}
+          />
+          {mode === "scheduled" ? (
+            <div>
+              <p className="mb-3 text-muted-foreground text-xs">{m.grid_hint()}</p>
+              <ScheduleGrid selected={draft} onChange={setDraft} disabled={save.isPending} />
+              {emptySchedule && (
+                <p className="mt-2 text-warning text-xs">{m.schedule_empty_selection()}</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-muted-foreground text-sm">{m.schedule_always_heading()}</p>
+          )}
+          {needsGap && (
+            <p role="alert" className="text-warning text-xs">
+              {m.schedule_needs_gap_body({ name: list.name })}
+            </p>
+          )}
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-faint-foreground text-xs">
+              {dirty ? m.schedule_unsaved() : m.schedule_saved()}
+            </span>
+            <Button onClick={commit} disabled={saveDisabled}>
+              {m.schedule_save()}
+            </Button>
+          </div>
+        </div>
+        <InlineError error={save.error} />
+      </Card>
+    </>
   );
 }
 
@@ -133,8 +233,15 @@ function ServiceListRow({
   const toggle = useToggleBlockList();
   const remove = useDeleteBlockList();
   const domains = list.websites.filter((rule) => rule.enabled && isDomainRule(rule));
+  const supportedApps = list.shared_allowance
+    ? 0
+    : list.applications.filter((rule) => rule.enabled && isExecutableNameRule(rule)).length;
   const ignored =
-    list.applications.length + list.exceptions.length + list.websites.length - domains.length;
+    list.applications.length -
+    supportedApps +
+    list.exceptions.length +
+    list.websites.length -
+    domains.length;
 
   return (
     <li>
@@ -162,6 +269,11 @@ function ServiceListRow({
                 <Badge tone="primary" outlined>
                   {m.service_domains_count({ count: domains.length })}
                 </Badge>
+                {supportedApps > 0 && (
+                  <Badge tone="primary" outlined>
+                    {m.count_apps({ count: supportedApps })}
+                  </Badge>
+                )}
                 {ignored > 0 && (
                   <Badge tone="warning" outlined>
                     {m.service_ignored_count({ count: ignored })}
