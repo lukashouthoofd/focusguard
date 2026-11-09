@@ -40,6 +40,7 @@ $nativeRegistrationSpecs = @(
   [pscustomobject]@{ Key = 'Software\Mozilla\NativeMessagingHosts\com.focuser.native'; Manifest = $legacyFirefoxManifest }
 )
 $testDomain = 'focuser-scm-recovery.invalid'
+$dohTestDomain = 'example.com'
 $hostsSnapshot = [IO.File]::ReadAllBytes($hostsPath)
 $hostsAcl = Get-Acl -LiteralPath $hostsPath
 $hostsAttributes = [IO.File]::GetAttributes($hostsPath)
@@ -183,15 +184,43 @@ function Invoke-NativeHeartbeat {
   }
 }
 
-function Wait-HostsRule {
+function Wait-HostsRule([string] $Domain = $testDomain) {
+  $escapedDomain = [Regex]::Escape($Domain)
   $deadline = [DateTime]::UtcNow.AddSeconds(20)
   do {
     $content = [IO.File]::ReadAllText($hostsPath)
-    if ($content -match "(?m)^127\.0\.0\.1\s+$testDomain\s*$" -and
-        $content -match "(?m)^127\.0\.0\.1\s+www\.$testDomain\s*$") { return }
+    if ($content -match "(?m)^127\.0\.0\.1\s+$escapedDomain\s*$" -and
+        $content -match "(?m)^127\.0\.0\.1\s+www\.$escapedDomain\s*$") { return }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
-  throw "The real Windows hosts file did not contain the expected exact-domain rule for $testDomain."
+  throw "The real Windows hosts file did not contain the expected exact-domain rule for $Domain."
+}
+
+function Assert-HostsResolution([string] $Domain) {
+  try { $addresses = [Net.Dns]::GetHostAddresses($Domain) }
+  catch { throw "Windows name resolution failed for hosts-blocked domain '$Domain': $_" }
+  $resolved = @($addresses | ForEach-Object { $_.IPAddressToString })
+  if ($resolved -notcontains '127.0.0.1') {
+    throw "Windows name resolution did not use the FocusGuard hosts entry for '$Domain': $($resolved -join ', ')."
+  }
+  Write-Host "Windows name resolution maps $Domain to 127.0.0.1 through the hosts file."
+}
+
+function Test-DohBypass([string] $Domain) {
+  $uri = "https://cloudflare-dns.com/dns-query?name=$([Uri]::EscapeDataString($Domain))&type=A"
+  try {
+    $response = Invoke-RestMethod -Uri $uri -Headers @{ Accept = 'application/dns-json' } -TimeoutSec 10 -ErrorAction Stop
+  } catch {
+    Write-Warning "Could not reach Cloudflare DoH for the optional bypass probe; skipped: $_"
+    return
+  }
+  $answers = @($response.Answer | Where-Object { $_.type -eq 1 } | ForEach-Object { $_.data })
+  $publicAnswers = @($answers | Where-Object { $_ -notin @('0.0.0.0', '127.0.0.1') })
+  if ($response.Status -ne 0 -or $publicAnswers.Count -eq 0) {
+    Write-Warning "Cloudflare DoH did not return a public A record for $Domain; bypass probe skipped."
+    return
+  }
+  Write-Host "DoH bypass reproduced: Cloudflare returned $($publicAnswers -join ', ') for $Domain while Windows name resolution uses the hosts block."
 }
 
 function Start-HiddenAndWait([string] $Path, [string[]] $Arguments, [int] $TimeoutSeconds = 180) {
@@ -463,6 +492,10 @@ try {
 
   Invoke-Probe 'seed'
   Wait-HostsRule
+  Assert-HostsResolution $testDomain
+  Wait-HostsRule $dohTestDomain
+  Assert-HostsResolution $dohTestDomain
+  Test-DohBypass $dohTestDomain
   Write-Host 'The installed service applied apex and www rules to the real runner hosts file.'
   Invoke-NativeHeartbeat
   Invoke-Probe 'verify'
@@ -475,6 +508,7 @@ try {
   Start-HiddenAndWait $installer @('/S', '/UPDATE', "/LOG=$nsisLogPath")
   $service = Wait-ProductService 'Running' $preUpdatePid
   Wait-HostsRule
+  Assert-HostsResolution $testDomain
   # Extension presence is intentionally transient and resets with the service.
   # Re-send the synthetic session heartbeat before asserting that health state.
   Invoke-NativeHeartbeat
@@ -485,6 +519,7 @@ try {
   # service reconciler must restore policy from its database without UI input.
   [IO.File]::WriteAllBytes($hostsPath, $hostsSnapshot)
   Wait-HostsRule
+  Assert-HostsResolution $testDomain
   Write-Host 'The service restored hosts policy after a direct hosts-file edit.'
 
   # Verify that the packaged SCM failure action restarts the installed service
@@ -493,6 +528,7 @@ try {
   Stop-Process -Id $previousPid -Force
   $service = Wait-ProductService 'Running' $previousPid
   Wait-HostsRule
+  Assert-HostsResolution $testDomain
   Invoke-NativeHeartbeat
   Invoke-Probe 'verify'
   Write-Host "SCM restarted the installed service as PID $($service.ProcessId) and restored the policy."

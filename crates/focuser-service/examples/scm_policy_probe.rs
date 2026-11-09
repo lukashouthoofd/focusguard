@@ -10,6 +10,7 @@ use focuser_common::types::WebsiteMatchType;
 
 const LIST_NAME: &str = "FocusGuard SCM recovery CI";
 const TEST_DOMAIN: &str = "focuser-scm-recovery.invalid";
+const DOH_TEST_DOMAIN: &str = "example.com";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -47,7 +48,14 @@ async fn seed() -> anyhow::Result<()> {
         rule: WebsiteMatchType::Domain(TEST_DOMAIN.into()),
     })
     .await?;
-    println!("Authenticated service IPC created the exact-domain rule for {TEST_DOMAIN}.");
+    execute(Command::AddWebsiteRule {
+        list_id: list.id,
+        rule: WebsiteMatchType::Domain(DOH_TEST_DOMAIN.into()),
+    })
+    .await?;
+    println!(
+        "Authenticated service IPC created exact-domain rules for {TEST_DOMAIN} and {DOH_TEST_DOMAIN}."
+    );
     Ok(())
 }
 
@@ -57,19 +65,23 @@ async fn verify() -> anyhow::Result<()> {
         bail!("service returned no block-list collection");
     };
 
-    let found = lists.iter().any(|list| {
-        list.name == LIST_NAME
-            && list.websites.iter().any(|rule| {
-                rule.enabled && rule.match_type == WebsiteMatchType::Domain(TEST_DOMAIN.into())
-            })
-    });
-    if !found {
-        bail!("service did not return the persisted exact-domain rule");
+    let found = lists.iter().find(|list| list.name == LIST_NAME);
+    let Some(list) = found else {
+        bail!("service did not return the persisted CI block list");
+    };
+    for domain in [TEST_DOMAIN, DOH_TEST_DOMAIN] {
+        if !list
+            .websites
+            .iter()
+            .any(|rule| rule.enabled && rule.match_type == WebsiteMatchType::Domain(domain.into()))
+        {
+            bail!("service did not return the persisted exact-domain rule for {domain}");
+        }
     }
 
     check_extension_presence().await?;
 
-    println!("Authenticated service IPC confirms {TEST_DOMAIN} is persisted.");
+    println!("Authenticated service IPC confirms both exact-domain rules are persisted.");
     Ok(())
 }
 
