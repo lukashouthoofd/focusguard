@@ -78,6 +78,7 @@ export const APP_KINDS = [
   { value: "ExecutableName", label: "Executable name" },
   { value: "ExecutablePath", label: "Full path" },
   { value: "WindowTitle", label: "Window title" },
+  { value: "BundleId", label: "Bundle identifier" },
 ] as const;
 
 export const EXCEPTION_KINDS = [
@@ -115,6 +116,8 @@ export function appRule(kind: AppKind, value: string): AppMatchType {
       return { ExecutablePath: value };
     case "WindowTitle":
       return { WindowTitle: value };
+    case "BundleId":
+      return { BundleId: value };
   }
 }
 

@@ -61,6 +61,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_System_SystemInformation"
 # Which app is in front, and how long the user has been away. Versions match
 # what Tauri already pulls in, so this adds no second copy of objc2.
 [target.'cfg(target_os = "macos")'.dependencies]
+focuser-client = { workspace = true }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",
     "libc",

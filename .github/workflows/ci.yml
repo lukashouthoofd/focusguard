@@ -242,6 +242,13 @@ jobs:
           mkdir -p crates/focuser-ui/binaries
           cp "target/${{ matrix.target }}/release/focuser-cli" "crates/focuser-ui/binaries/focuser-cli-${{ matrix.target }}"
 
+      - name: Build and stage macOS enforcement helper
+        shell: bash
+        run: |
+          cargo build --locked --release --target "${{ matrix.target }}" -p focuser-service --bin focusguard-service
+          mkdir -p crates/focuser-ui/resources
+          install -m 755 "target/${{ matrix.target }}/release/focusguard-service" crates/focuser-ui/resources/focusguard-service
+
       # Build a native CLI for each runner architecture. The v2.10.1 x86_64
       # Darwin release asset was mislabeled as ARM64, so use Cargo for both.
       - name: Cache native Tauri CLI
@@ -260,6 +267,8 @@ jobs:
         working-directory: crates/focuser-ui
         run: |
           cargo tauri build --target "${{ matrix.target }}" --bundles dmg --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          test -x "../../target/${{ matrix.target }}/release/bundle/macos/FocusGuard.app/Contents/MacOS/focusguard-service"
+          test -f "../../target/${{ matrix.target }}/release/bundle/macos/FocusGuard.app/Contents/Library/LaunchDaemons/com.publikhq.focusguard.daemon.plist"
           test -n "$(find ../../target/${{ matrix.target }}/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
 
       - name: Upload unsigned macOS DMG

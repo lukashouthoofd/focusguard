@@ -2,7 +2,334 @@
 mod pipe;
 
 #[cfg(windows)]
-mod enforcement;
+use focuser_service::enforcement;
+
+#[cfg(target_os = "macos")]
+mod macos_service_host {
+    use std::{
+        fs::{self, OpenOptions},
+        io::Write,
+        os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        path::Path,
+        sync::Arc,
+        time::Duration,
+    };
+
+    use anyhow::{Context, bail};
+    use focuser_common::ipc::{
+        FOCUSGUARD_SERVICE_DATABASE_PATH, FOCUSGUARD_SERVICE_OWNER_UID_PATH,
+        read_macos_service_owner_uid,
+    };
+    use focuser_service::{enforcement, unix_socket};
+    use rusqlite::{Connection, OpenFlags, backup::Backup};
+
+    pub async fn run() -> anyhow::Result<()> {
+        let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+        if arguments.len() != 1 || arguments[0] != "--macos-daemon" {
+            bail!("the macOS helper must be launched with --macos-daemon");
+        }
+        if unsafe { libc::geteuid() } != 0 {
+            bail!("the macOS helper must be launched by launchd as root");
+        }
+        unsafe { libc::umask(0o077) };
+
+        ensure_support_directories()?;
+        let owner_uid = owner_uid_for_service().await?;
+        migrate_user_database(owner_uid)?;
+        let (listener, _socket_guard) = unix_socket::bind_macos_listener(owner_uid)
+            .await
+            .context("prepare the authenticated macOS service socket")?;
+        let context = Arc::new(enforcement::open_context(
+            FOCUSGUARD_SERVICE_DATABASE_PATH,
+            "/etc/hosts",
+            enforcement::flush_system_dns,
+        )?);
+        if let Err(error) = enforcement::reconcile_once(&context) {
+            eprintln!("initial FocusGuard policy reconciliation failed: {error}");
+        }
+
+        let reconcile_context = Arc::clone(&context);
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .context("listen for launchd shutdown")?;
+        tokio::select! {
+            result = unix_socket::serve(listener, owner_uid, Arc::clone(&context), true) => {
+                result.context("macOS service socket stopped")
+            }
+            _ = enforcement::run_reconciler(reconcile_context) => Ok(()),
+            Some(()) = terminate.recv() => {
+                context.sync_hosts_with(&[]).map_err(anyhow::Error::msg)
+                    .context("restore hosts file before the service exits")?;
+                Ok(())
+            }
+            result = tokio::signal::ctrl_c() => result.context("wait for shutdown signal"),
+        }
+    }
+
+    async fn owner_uid_for_service() -> anyhow::Result<u32> {
+        loop {
+            if let Some(owner_uid) = read_macos_service_owner_uid()? {
+                return Ok(owner_uid);
+            }
+
+            let console = fs::metadata("/dev/console").context("read the active console user")?;
+            let owner_uid = console.uid();
+            // /dev/console can briefly belong to setup/loginwindow accounts
+            // that do not have a normal user home. Do not persist one of
+            // those UIDs: launchd will keep restarting us, and a marker would
+            // otherwise pin every restart to that ineligible account.
+            if owner_uid != 0 && user_home(owner_uid).is_ok() {
+                write_owner_marker(owner_uid)?;
+                return Ok(owner_uid);
+            }
+
+            // launchd may start this daemon before the first graphical login.
+            // Wait without creating an unowned socket or opening a root policy DB.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    fn ensure_support_directories() -> anyhow::Result<()> {
+        // /Library/Application Support is shared with the whole system. Only
+        // inspect it; never change permissions on an administrator-managed
+        // directory. New directories below it are ours to create with the
+        // traversal bits required by the per-user socket client.
+        validate_support_directory(Path::new("/Library/Application Support"), 0)?;
+        ensure_product_directory(Path::new("/Library/Application Support/PublikHQ"), 0)?;
+        ensure_product_directory(
+            Path::new("/Library/Application Support/PublikHQ/FocusGuard"),
+            0,
+        )?;
+        Ok(())
+    }
+
+    fn validate_support_directory(path: &Path, owner_uid: u32) -> anyhow::Result<()> {
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("inspect support directory {}", path.display()))?;
+        if !metadata.file_type().is_dir()
+            || metadata.uid() != owner_uid
+            || metadata.mode() & 0o022 != 0
+            || metadata.mode() & 0o001 == 0
+        {
+            bail!(
+                "{} must be an owner-controlled directory, protected from group/world writes, and traversable by the service client",
+                path.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_product_directory(path: &Path, owner_uid: u32) -> anyhow::Result<()> {
+        match fs::create_dir(path) {
+            Ok(()) => fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+                .with_context(|| format!("set permissions on {}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("create {}", path.display()));
+            }
+        }
+        validate_support_directory(path, owner_uid)
+    }
+
+    fn write_owner_marker(owner_uid: u32) -> anyhow::Result<()> {
+        let marker = Path::new(FOCUSGUARD_SERVICE_OWNER_UID_PATH);
+        let temporary = marker.with_extension(format!("tmp.{}", unsafe { libc::getpid() }));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&temporary)
+            .context("create the temporary service owner marker")?;
+        writeln!(file, "{owner_uid}").context("write the service owner marker")?;
+        file.sync_all().context("sync the service owner marker")?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o644))?;
+        fs::rename(&temporary, marker).context("publish the service owner marker")?;
+        Ok(())
+    }
+
+    fn migrate_user_database(owner_uid: u32) -> anyhow::Result<()> {
+        let home = user_home(owner_uid)?;
+        let source = home.join("Library/Application Support/com.publikhq.FocusGuard/focusguard.db");
+        let destination = Path::new(FOCUSGUARD_SERVICE_DATABASE_PATH);
+
+        if validate_service_database(destination, 0)? {
+            for suffix in ["-wal", "-shm"] {
+                let sidecar = sqlite_sidecar_path(destination, suffix);
+                validate_service_database(&sidecar, 0)
+                    .with_context(|| format!("validate SQLite sidecar {}", sidecar.display()))?;
+            }
+            return Ok(());
+        }
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = sqlite_sidecar_path(destination, suffix);
+            if validate_service_database(&sidecar, 0)? {
+                bail!(
+                    "a SQLite sidecar exists without the system policy database: {}",
+                    sidecar.display()
+                );
+            }
+        }
+
+        let source_metadata = match fs::symlink_metadata(&source) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error).context("inspect the user's policy database"),
+        };
+        if !source_metadata.file_type().is_file() || source_metadata.uid() != owner_uid {
+            bail!("the user's policy database must be a regular file owned by the console user");
+        }
+
+        let temporary =
+            destination.with_extension(format!("migrate.{}", unsafe { libc::getpid() }));
+        let source_db = Connection::open_with_flags(&source, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .context("open the user's policy database read-only")?;
+        let mut destination_db =
+            Connection::open(&temporary).context("create a temporary system policy database")?;
+        {
+            let backup = Backup::new(&source_db, &mut destination_db)
+                .context("prepare the user's policy database migration")?;
+            backup
+                .run_to_completion(128, Duration::from_millis(25), None)
+                .context("copy the user's policy database")?;
+        }
+        drop(destination_db);
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
+        fs::rename(&temporary, destination).context("publish the system policy database")?;
+        Ok(())
+    }
+
+    fn validate_service_database(path: &Path, owner_uid: u32) -> anyhow::Result<bool> {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error).with_context(|| format!("inspect {}", path.display())),
+        };
+        if !metadata.file_type().is_file()
+            || metadata.uid() != owner_uid
+            || metadata.mode() & 0o077 != 0
+            || metadata.mode() & 0o600 != 0o600
+        {
+            bail!(
+                "{} must be a private regular file owned by UID {owner_uid}",
+                path.display()
+            );
+        }
+        Ok(true)
+    }
+
+    fn sqlite_sidecar_path(database: &Path, suffix: &str) -> std::path::PathBuf {
+        let name = database
+            .file_name()
+            .expect("the system database path has a file name")
+            .to_string_lossy();
+        database.with_file_name(format!("{name}{suffix}"))
+    }
+
+    fn user_home(uid: u32) -> anyhow::Result<std::path::PathBuf> {
+        use std::{ffi::CStr, mem::MaybeUninit, ptr};
+
+        let suggested_size = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+        let buffer_size = if suggested_size > 0 {
+            suggested_size as usize
+        } else {
+            16 * 1024
+        };
+        let mut buffer = vec![0u8; buffer_size];
+        let mut record = MaybeUninit::<libc::passwd>::zeroed();
+        let mut result = ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid as libc::uid_t,
+                record.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status != 0 {
+            return Err(std::io::Error::from_raw_os_error(status))
+                .context("look up the console user's home directory");
+        }
+        if result.is_null() {
+            bail!("no home directory exists for console UID {uid}");
+        }
+        let record = unsafe { record.assume_init() };
+        let home = unsafe { CStr::from_ptr(record.pw_dir) }.to_string_lossy();
+        if home.is_empty() || !home.starts_with("/Users/") {
+            bail!("console UID {uid} does not have a user home under /Users");
+        }
+        Ok(std::path::PathBuf::from(home.as_ref()))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::{
+            fs,
+            os::unix::{fs::MetadataExt, fs::PermissionsExt},
+        };
+
+        use tempfile::tempdir;
+
+        use super::{
+            ensure_product_directory, sqlite_sidecar_path, validate_service_database,
+            validate_support_directory,
+        };
+
+        #[test]
+        fn shared_support_validation_does_not_change_existing_permissions() {
+            let directory = tempdir().unwrap();
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o711)).unwrap();
+
+            assert!(
+                validate_support_directory(directory.path(), unsafe { libc::geteuid() }).is_ok()
+            );
+            assert_eq!(
+                fs::symlink_metadata(directory.path()).unwrap().mode() & 0o777,
+                0o711
+            );
+
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(
+                validate_support_directory(directory.path(), unsafe { libc::geteuid() }).is_err()
+            );
+            assert_eq!(
+                fs::symlink_metadata(directory.path()).unwrap().mode() & 0o777,
+                0o700,
+                "validation must not relax an existing directory"
+            );
+        }
+
+        #[test]
+        fn product_directory_is_created_with_client_traversal_permissions() {
+            let parent = tempdir().unwrap();
+            let product = parent.path().join("FocusGuard");
+
+            ensure_product_directory(&product, unsafe { libc::geteuid() }).unwrap();
+
+            assert_eq!(fs::symlink_metadata(product).unwrap().mode() & 0o777, 0o755);
+        }
+
+        #[test]
+        fn service_database_and_sidecars_must_be_private_writable_files() {
+            let directory = tempdir().unwrap();
+            let database = directory.path().join("focusguard.db");
+            fs::write(&database, b"test").unwrap();
+            let owner_uid = unsafe { libc::geteuid() };
+            fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(validate_service_database(&database, owner_uid).unwrap());
+
+            fs::set_permissions(&database, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(validate_service_database(&database, owner_uid).is_err());
+
+            let wal = sqlite_sidecar_path(&database, "-wal");
+            fs::write(&wal, b"test").unwrap();
+            fs::set_permissions(&wal, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(validate_service_database(&wal, owner_uid).unwrap());
+            fs::set_permissions(&wal, fs::Permissions::from_mode(0o400)).unwrap();
+            assert!(validate_service_database(&wal, owner_uid).is_err());
+        }
+    }
+}
 
 #[cfg(windows)]
 mod windows_service_host {
@@ -430,7 +757,13 @@ fn main() -> anyhow::Result<()> {
     windows_service_host::run()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    macos_service_host::run().await
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
-    eprintln!("focusguard-service is only available on Windows");
+    eprintln!("focusguard-service is available only on Windows and macOS");
 }

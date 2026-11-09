@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Authenticated Windows named-pipe client for the FocusGuard service"
+description = "Authenticated Windows and macOS IPC client for the FocusGuard service"
 
 [dependencies]
 focuser-app.workspace = true
@@ -19,3 +19,9 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Pipes",
     "Win32_System_Services",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+smappservice-rs = "=0.1.3"

@@ -64,18 +64,18 @@ pub async fn run_command(
         })?
         .map_err(CommandErrorPayload::from),
         RuntimeBackend::Service => {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 focuser_client::execute(command)
                     .await
                     .map_err(service_client_error)
             }
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "macos")))]
             {
                 let _ = command;
                 Err(CommandErrorPayload {
-                    code: "service_backend_windows_only".into(),
-                    message: "The service backend is only available on Windows.".into(),
+                    code: "service_backend_unsupported".into(),
+                    message: "The service backend is only available on Windows and macOS.".into(),
                 })
             }
         }
@@ -86,7 +86,6 @@ pub async fn run_command(
     }
 }
 
-#[cfg(windows)]
 fn service_client_error(error: focuser_client::ClientError) -> CommandErrorPayload {
     use focuser_client::ClientError;
 
@@ -98,6 +97,10 @@ fn service_client_error(error: focuser_client::ClientError) -> CommandErrorPaylo
             message,
         },
         ClientError::ScmRegistration(_) => CommandErrorPayload {
+            code: "service_registration_error".into(),
+            message,
+        },
+        ClientError::ServiceRegistration(_) => CommandErrorPayload {
             code: "service_registration_error".into(),
             message,
         },
@@ -114,7 +117,7 @@ fn service_client_error(error: focuser_client::ClientError) -> CommandErrorPaylo
             message,
         },
         ClientError::UnsupportedPlatform => CommandErrorPayload {
-            code: "service_backend_windows_only".into(),
+            code: "service_backend_unsupported".into(),
             message,
         },
     }
@@ -152,6 +155,31 @@ mod tests {
 #[specta::specta]
 pub fn is_service_mode(backend: State<'_, RuntimeBackend>) -> bool {
     !matches!(backend.inner(), RuntimeBackend::Local(_))
+}
+
+/// Current SMAppService authorization status. The command remains present on
+/// other platforms so the frontend can keep one typed binding surface.
+#[tauri::command]
+pub fn macos_service_status() -> String {
+    focuser_client::macos_service_status().to_owned()
+}
+
+/// Ask macOS to register the bundled privileged helper. Approval may still be
+/// required in System Settings > General > Login Items.
+#[tauri::command]
+pub fn register_macos_service(app: tauri::AppHandle) -> Result<(), CommandErrorPayload> {
+    focuser_client::register_macos_service().map_err(service_client_error)?;
+    #[cfg(target_os = "macos")]
+    app.restart();
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    Ok(())
+}
+
+/// Open the macOS Login Items settings pane for service approval and control.
+#[tauri::command]
+pub fn open_macos_service_settings() -> Result<(), CommandErrorPayload> {
+    focuser_client::open_macos_service_settings().map_err(service_client_error)
 }
 
 /// The specta builder, used both to export bindings and to document the surface.

@@ -352,7 +352,12 @@ fn blocked_processes(
     mut exe_path: impl FnMut(u32) -> Option<String>,
     titles: &HashMap<u32, Vec<String>>,
 ) -> Vec<(u32, String, String)> {
-    let wants_paths = active_app_rules(eng).any(|r| matches!(r, AppMatchType::ExecutablePath(_)));
+    let wants_paths = active_app_rules(eng).any(|r| {
+        matches!(
+            r,
+            AppMatchType::ExecutablePath(_) | AppMatchType::BundleId(_)
+        )
+    });
     let mut blocked = Vec::new();
     for proc in procs {
         if !proc.is_killable() || exempt.contains(&proc.name.to_ascii_lowercase()) {
@@ -363,15 +368,28 @@ fn blocked_processes(
         } else {
             None
         };
+        let bundle_id = path
+            .as_deref()
+            .and_then(process::bundle_id_for_executable_path);
         let own_titles = titles
             .get(&proc.pid)
             .filter(|_| identify_browser(&proc.name).is_none())
             .filter(|t| !t.is_empty());
         let list = match own_titles {
-            Some(titles) => titles
-                .iter()
-                .find_map(|t| eng.check_app(&proc.name, path.as_deref(), Some(t))),
-            None => eng.check_app(&proc.name, path.as_deref(), None),
+            Some(titles) => titles.iter().find_map(|t| {
+                eng.check_app_with_bundle_id(
+                    &proc.name,
+                    path.as_deref(),
+                    Some(t),
+                    bundle_id.as_deref(),
+                )
+            }),
+            None => eng.check_app_with_bundle_id(
+                &proc.name,
+                path.as_deref(),
+                None,
+                bundle_id.as_deref(),
+            ),
         };
         if let Some(list) = list {
             blocked.push((proc.pid, proc.name.clone(), list.to_string()));
@@ -874,6 +892,43 @@ mod tests {
         );
         assert_eq!(closed.len(), 1);
         assert_eq!(asked, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_macos_bundle_identifier_rule_blocks_its_app_bundle() {
+        use focuser_common::types::AppRule;
+
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("Focus.app");
+        let contents = bundle.join("Contents");
+        let executable = contents.join("MacOS/Focus");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(
+            contents.join("Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.example.Focus</string>
+</dict></plist>"#,
+        )
+        .unwrap();
+        let engine = engine_with_app_rules(vec![AppRule {
+            id: focuser_common::types::new_id(),
+            match_type: AppMatchType::BundleId("com.example.Focus".into()),
+            enabled: true,
+        }]);
+
+        let blocked = blocked_processes(
+            &engine,
+            &[proc(10, "Focus")],
+            &HashSet::new(),
+            |_| Some(executable.to_string_lossy().into_owned()),
+            &HashMap::new(),
+        );
+
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].0, 10);
     }
 
     #[test]

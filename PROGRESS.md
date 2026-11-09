@@ -1,5 +1,26 @@
 # Progress
 
+## 2026-11-09 — macOS persistent service implementation
+
+- Added a macOS 13+ LaunchDaemon path using `SMAppService`, a root-owned policy database, SQLite backup migration, protected per-user Unix-socket IPC, a persistent hosts-file reconciler, and bundle-ID matching in local desktop mode. The UI shows service approval and current domain-only enforcement scope.
+- Security review corrected shared `/Library/Application Support` permission mutation, delayed owner-UID persistence until a valid user home exists, kept service mode selected when an installation marker survives unregistration, and rejected group/world-readable SQLite databases and WAL/SHM files.
+- On the Windows development host, `cargo test --workspace --locked --quiet`, strict workspace Clippy, Rust formatting, and diff checks passed; the frontend passed 289 tests, lint, typecheck, and production build. These host checks do not compile or execute macOS-only code.
+- Pending GitHub CI on Intel and Apple Silicon macOS runners will compile/test the Mac code and package unsigned DMGs. The unsigned artifacts are not release-ready: SMAppService requires an acceptable app/helper code signature, and signing/notarization credentials are not configured. No real macOS VM or device lifecycle test has been run; approval, disable, reboot, crash recovery, migration, and hosts cleanup remain unverified.
+- PublikHQ remains a SaaS listing destination; FocusGuard has no feature that needs a Publik API integration.
+
+## 2026-11-09 — macOS enforcement core groundwork
+
+- Moved the persistent hosts-policy reconciler into the reusable `focuser-service::enforcement` library so a future macOS LaunchDaemon can share the same database, schedule refresh, health reporting, and hosts-file recovery logic as the Windows service. Added the macOS DNS-cache flush sequence (`dscacheutil` then `mDNSResponder`) with failure propagation.
+- `cargo test --locked -p focuser-service` passed 33 unit tests and `cargo fmt --all -- --check` passed on Windows. The two new Mac flush tests verify command order and early failure behavior; they do not prove a Mac build or runtime.
+- The helper executable, authenticated macOS IPC, SMAppService registration/status UI, and bundle staging have since been implemented in source. Signing/notarization and macOS VM lifecycle tests remain open. Apple documents that SMAppService LaunchDaemons require administrator approval; its helper bundle must meet macOS code-signature requirements, and notarization is required for a user-ready download containing LaunchDaemons.
+
+## 2026-11-09 — macOS browser-launch verification
+
+- The current FocusGuard checkout is `C:\Users\lukas\focusguard` on `main`; its existing uncommitted macOS work in `crates/focuser-ui/src/native.rs` is preserved. Extracted the `/usr/bin/open -a <app> <url>` command construction into a pure helper and added tests for supported app mapping, exact arguments, and unknown-browser rejection. `cargo test --locked -p focuser-ui macos_tests` passes all 3 tests; `cargo fmt --all -- --check` passes.
+- Confirmed the installed Cold Turkey Blocker 4.9 executable still has SHA-256 `5bc434b593d219d3686a403296d02e3d163234504900ce94fa04a6b2e982d509` using REA 6.8.0 static managed-artifact identity inspection. This matches the existing 2026-11-08 evidence; no new member/CIL or runtime analysis was performed. Use the public feature ledger and existing REA metadata; do not inspect licensing logic or copy proprietary code.
+- `cargo check --locked --target aarch64-apple-darwin -p focuser-ui` could not start its macOS dependency build because this Windows host lacks a target C compiler (`objc2-exception-helper` reports `ToolNotFound: cc`). The Rust target is installed, but this is not evidence that the macOS target compiles. A real macOS runner/Xcode toolchain is still needed for that gate.
+- This does not complete macOS support or product parity. `README.md` still correctly records that macOS enforcement runs only in the desktop process and website hosts writes need administrator access. Remaining scope includes persistent macOS enforcement, the documented Cold Turkey feature set in `docs/research/cold-turkey-public-evidence.md`, remaining Windows service-rule gaps, and an actual macOS build. PublikHQ listing/API setup is not complete; the app has no AI feature that would use Publik's covered API, and the Publik setup instructions require one explicit approval before listing.
+
 ## 2026-11-09 - Windows installer lifecycle and release preparation
 
 - Replaced the logon-task-only NSIS path with a per-machine, single-policy-owner Windows service lifecycle. The service uses a stable Program Files directory, LocalSystem, protected ProgramData storage, service SID and SCM recovery actions. NSIS preflight rejects another account's UI/native-host process. The helper keeps the service running while files are copied, migrates policy data, registers Chrome/Edge/Firefox Native Messaging, and removes only FocusGuard-owned registrations and marked hosts entries on uninstall.

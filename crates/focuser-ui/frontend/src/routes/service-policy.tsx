@@ -1,6 +1,7 @@
 import { AppWindow, Globe, ListChecks, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { type FormEvent, useMemo, useState } from "react";
 import type { BlockList, WebsiteRule } from "@/bindings";
+import { MacosServiceSetup } from "@/components/macos-service-setup";
 import { RuleTable } from "@/components/rule-table";
 import { ScheduleGrid } from "@/components/schedule-grid";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,7 @@ import {
   useUpdateSchedule,
 } from "@/lib/commands";
 import { describeApp, describeWebsite } from "@/lib/match-types";
+import { hostPlatform } from "@/lib/native";
 import { type CellKey, cellsToSlots, DAYS, HOURS, slotsToCells } from "@/lib/schedule";
 import { m } from "@/paraglide/messages.js";
 
@@ -38,7 +40,7 @@ function isExecutableNameRule(rule: BlockList["applications"][number]) {
   return typeof rule.match_type === "object" && "ExecutableName" in rule.match_type;
 }
 
-/** The deliberately small policy surface supported by the Windows service. */
+/** The service-mode policy surface, narrowed to supported commands per platform. */
 export function ServicePolicy() {
   const lists = useBlockLists();
   const health = useBlockingHealth();
@@ -46,6 +48,7 @@ export function ServicePolicy() {
   const [name, setName] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [panel, setPanel] = useState<"websites" | "applications" | "schedule">("websites");
+  const macos = hostPlatform() === "macos";
 
   const selected = lists.data?.find((list) => list.id === selectedId) ?? lists.data?.[0] ?? null;
 
@@ -64,6 +67,8 @@ export function ServicePolicy() {
   return (
     <Page wide>
       <PageHeader title={m.service_title()} description={m.service_description()} />
+
+      <MacosServiceSetup />
 
       <Card className="mb-6 border-warning/30 bg-warning/5" padding="md" elevation="raised">
         <p className="flex items-start gap-2 text-sm text-muted-foreground">
@@ -126,13 +131,13 @@ export function ServicePolicy() {
                 onChange={setPanel}
                 items={[
                   { id: "websites", label: m.websites_title() },
-                  { id: "applications", label: m.apps_title() },
+                  ...(!macos ? [{ id: "applications" as const, label: m.apps_title() }] : []),
                   { id: "schedule", label: m.schedule_title() },
                 ]}
               />
               {panel === "websites" ? (
                 <DomainRules list={selected} />
-              ) : panel === "applications" ? (
+              ) : panel === "applications" && !macos ? (
                 <ApplicationRules key={selected.id} list={selected} />
               ) : (
                 <ServiceSchedule key={selected.id} list={selected} />

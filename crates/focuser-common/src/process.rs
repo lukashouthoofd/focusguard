@@ -79,6 +79,17 @@ pub fn exe_path(pid: u32) -> Option<String> {
     imp::exe_path(pid)
 }
 
+/// Read a macOS app's bundle identifier from the executable's containing `.app`.
+#[cfg(target_os = "macos")]
+pub fn bundle_id_for_executable_path(path: &str) -> Option<String> {
+    imp::bundle_id_for_executable_path(path)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn bundle_id_for_executable_path(_path: &str) -> Option<String> {
+    None
+}
+
 /// The titles of the visible top-level windows, by the process that owns
 /// them. Windows only: Linux and macOS give no reliable way to read another
 /// app's window titles, so there it is always empty.
@@ -537,6 +548,16 @@ mod imp {
         (len > 0).then(|| String::from_utf8_lossy(&buf[..len as usize]).into_owned())
     }
 
+    pub fn bundle_id_for_executable_path(path: &str) -> Option<String> {
+        let executable = std::path::Path::new(path);
+        let bundle = executable.ancestors().find(|ancestor| {
+            ancestor
+                .extension()
+                .is_some_and(|extension| extension == "app")
+        })?;
+        declared_bundle_id(&bundle.join("Contents/Info.plist"))
+    }
+
     pub fn window_titles() -> std::collections::HashMap<u32, Vec<String>> {
         std::collections::HashMap::new()
     }
@@ -563,6 +584,17 @@ mod imp {
         (!name.is_empty()).then_some(name)
     }
 
+    fn declared_bundle_id(info_plist: &std::path::Path) -> Option<String> {
+        let value = plist::Value::from_file(info_plist).ok()?;
+        let bundle_id = value
+            .as_dictionary()?
+            .get("CFBundleIdentifier")?
+            .as_string()?
+            .trim()
+            .to_string();
+        (!bundle_id.is_empty()).then_some(bundle_id)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -585,6 +617,34 @@ mod imp {
 
             let name = name_for_path(bundle.to_str().unwrap());
             assert_eq!(name, "Google Chrome");
+        }
+
+        #[test]
+        fn an_executable_resolves_its_bundle_identifier() {
+            let dir = tempfile::tempdir().unwrap();
+            let bundle = dir.path().join("Focus.app");
+            let contents = bundle.join("Contents");
+            let executable = contents.join("MacOS/Focus");
+            std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            std::fs::write(
+                contents.join("Info.plist"),
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.example.Focus</string>
+</dict></plist>"#,
+            )
+            .unwrap();
+
+            assert_eq!(
+                bundle_id_for_executable_path(executable.to_str().unwrap()).as_deref(),
+                Some("com.example.Focus"),
+            );
+        }
+
+        #[test]
+        fn an_executable_outside_an_app_bundle_has_no_bundle_identifier() {
+            assert_eq!(bundle_id_for_executable_path("/usr/bin/ssh"), None);
         }
 
         #[test]

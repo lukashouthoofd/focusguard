@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { BrowserStatusList } from "@/components/browser-status";
 import { ConfigTransfer } from "@/components/config-transfer";
+import { MacosServiceSetup } from "@/components/macos-service-setup";
 import { SettingRow, SettingsSection } from "@/components/setting-row";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/card";
@@ -100,6 +101,8 @@ export function Settings() {
           }
         />
       </SettingsSection>
+
+      <MacosServiceSetup />
 
       <SettingsSection
         title={m.settings_section_browsers()}

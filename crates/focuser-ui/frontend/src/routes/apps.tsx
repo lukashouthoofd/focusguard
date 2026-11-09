@@ -26,16 +26,19 @@ const EXAMPLES: Record<ReturnType<typeof hostPlatform>, Record<AppKind, string>>
     ExecutableName: "discord.exe",
     ExecutablePath: "C:\\Program Files\\Steam\\steam.exe",
     WindowTitle: "Solitaire",
+    BundleId: "com.example.Focus",
   },
   macos: {
     ExecutableName: "Discord",
     ExecutablePath: "/Applications/Steam.app",
     WindowTitle: "Solitaire",
+    BundleId: "com.example.Focus",
   },
   linux: {
     ExecutableName: "discord",
     ExecutablePath: "/usr/bin/steam",
     WindowTitle: "Solitaire",
+    BundleId: "com.example.Focus",
   },
 };
 
@@ -45,11 +48,14 @@ const APP_KIND_LABEL: Record<AppKind, () => string> = {
   ExecutableName: m.apps_kind_executable_name,
   ExecutablePath: m.apps_kind_executable_path,
   WindowTitle: m.apps_kind_window_title,
+  BundleId: m.apps_kind_bundle_id,
 };
 
 /** Built during render so the labels follow the current language. */
 function appKindOptions() {
-  return APP_KINDS.map((k) => ({ value: k.value, label: APP_KIND_LABEL[k.value]() }));
+  return APP_KINDS.filter((kind) => kind.value !== "BundleId" || hostPlatform() === "macos").map(
+    (kind) => ({ value: kind.value, label: APP_KIND_LABEL[kind.value]() }),
+  );
 }
 
 export function Apps() {

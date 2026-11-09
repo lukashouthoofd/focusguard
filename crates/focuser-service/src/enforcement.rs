@@ -1,14 +1,16 @@
-//! Persistent, exact-domain Windows hosts-file enforcement owned by the
-//! service process. Callers supply both paths so tests can use temporary files.
+//! Persistent, exact-domain hosts-file enforcement owned by the service
+//! process. Callers supply both paths so tests can use temporary files.
 
 use std::{
     fs::OpenOptions,
     io,
     path::{Path, PathBuf},
-    process::Command,
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+#[cfg(any(windows, target_os = "macos"))]
+use std::process::Command;
 
 use focuser_app::{AppContext, SystemSync};
 use focuser_core::{BlockEngine, Database};
@@ -129,10 +131,34 @@ pub fn flush_system_dns() -> io::Result<()> {
             )))
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        flush_macos_dns(|program, arguments| {
+            let output = Command::new(program).args(arguments).output()?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!(
+                    "{} exited with {}",
+                    Path::new(program)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(program),
+                    output.status
+                )))
+            }
+        })
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         Ok(())
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn flush_macos_dns(mut run: impl FnMut(&str, &[&str]) -> io::Result<()>) -> io::Result<()> {
+    run("/usr/bin/dscacheutil", &["-flushcache"])?;
+    run("/usr/bin/killall", &["-HUP", "mDNSResponder"])
 }
 
 #[cfg(test)]
@@ -145,6 +171,45 @@ mod tests {
 
     fn no_flush() -> io::Result<()> {
         Ok(())
+    }
+
+    #[test]
+    fn macos_dns_flush_invalidates_directory_and_resolver_caches_in_order() {
+        let mut calls = Vec::new();
+        flush_macos_dns(|program, arguments| {
+            calls.push((
+                program.to_string(),
+                arguments
+                    .iter()
+                    .map(|argument| argument.to_string())
+                    .collect::<Vec<_>>(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            calls,
+            [
+                ("/usr/bin/dscacheutil".into(), vec!["-flushcache".into()]),
+                (
+                    "/usr/bin/killall".into(),
+                    vec!["-HUP".into(), "mDNSResponder".into()]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn macos_dns_flush_stops_if_directory_cache_flush_fails() {
+        let mut calls = 0;
+        let result = flush_macos_dns(|_, _| {
+            calls += 1;
+            Err(io::Error::other("flush denied"))
+        });
+
+        assert_eq!(calls, 1);
+        assert_eq!(result.unwrap_err().to_string(), "flush denied");
     }
 
     #[test]
@@ -204,6 +269,11 @@ mod tests {
             .unwrap(),
             focuser_common::hosts_file::HostsSyncOutcome::Unchanged
         );
+
+        // launchd sends SIGTERM when the user disables the helper. The
+        // orderly-shutdown path clears only FocusGuard-owned entries.
+        context.sync_hosts_with(&[]).unwrap();
+        assert_eq!(fs::read_to_string(&hosts).unwrap(), original);
     }
 
     #[test]

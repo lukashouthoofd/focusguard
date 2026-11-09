@@ -125,20 +125,19 @@ fn main() {
         }
     }
 
-    let service_mode_requested =
-        cfg!(windows) && std::env::args().any(|arg| arg == "--service-client");
-    #[cfg(windows)]
+    let service_mode_requested = cfg!(any(windows, target_os = "macos"))
+        && std::env::args().any(|arg| arg == "--service-client");
+    #[cfg(any(windows, target_os = "macos"))]
     let service_registered = match focuser_client::is_service_registered() {
         Ok(registered) => registered,
         Err(error) => {
-            // If SCM cannot be queried, fail closed into service mode. The
-            // command path will show the connection problem instead of
-            // starting a second local policy owner.
+            // If service registration cannot be queried, fail closed into
+            // service mode instead of starting another local policy owner.
             warn!(%error, "Could not determine whether the FocusGuard service is registered");
             true
         }
     };
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let service_registered = false;
     let service_mode = service_mode_requested || service_registered;
 
@@ -170,7 +169,7 @@ fn main() {
             )
         }
         Ok(owner_lock) if service_mode => {
-            info!("Starting Windows service-client mode without opening a local policy database");
+            info!("Starting service-client mode without opening a local policy database");
             (
                 typed_commands::RuntimeBackend::Service,
                 None,
@@ -226,6 +225,9 @@ fn main() {
             // Everything the application can do goes through one command.
             typed_commands::run_command,
             typed_commands::is_service_mode,
+            typed_commands::macos_service_status,
+            typed_commands::register_macos_service,
+            typed_commands::open_macos_service_settings,
             // Native shims that need a Tauri handle or OS process access.
             native::pick_app_file,
             native::pick_import_file,

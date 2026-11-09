@@ -78,7 +78,7 @@ cd crates/focuser-ui
 cargo tauri dev
 ```
 
-The app is not yet a persistent macOS blocker: website host rules need administrator access, and app enforcement stops when the desktop process exits. The current DMG packaging check skips code signing; a user-facing download still needs Apple signing and notarization. See the [Tauri macOS bundle guide](https://v2.tauri.app/distribute/macos-application-bundle/) and [signing guide](https://v2.tauri.app/distribute/sign/macos/).
+The approved macOS 13+ system service can keep exact-domain hosts rules active after the UI exits. App rules in local desktop mode can match a macOS bundle identifier read from the containing app's `Info.plist`; this enforcement stops when the desktop process exits. The privileged service still enforces website rules only and hides app rules. This service path and the new bundle-ID matcher have not yet been built or exercised on a Mac. The current DMG packaging check skips code signing; a user-facing download still needs Apple signing and notarization. See the [Tauri macOS bundle guide](https://v2.tauri.app/distribute/macos-application-bundle/) and [signing guide](https://v2.tauri.app/distribute/sign/macos/).
 
 The frontend and extension tests/builds, Rust workspace suite, strict Clippy, and formatting check pass in this checkout. The NSIS package and Chrome/Firefox archives also build locally. These are not a substitute for the pending installed-product Windows run or a real browser session. See [CI](.github/workflows/ci.yml) and [extension packaging](.github/workflows/package-extension.yml).
 

@@ -82,48 +82,15 @@ pub fn save_configuration(app: tauri::AppHandle, json: String) -> Result<Option<
 }
 
 /// Browser processes currently running, used by `SystemSync::running_browsers`.
-#[cfg(windows)]
 pub fn detect_running_browsers() -> std::collections::HashSet<focuser_common::extension::BrowserType>
 {
-    use std::collections::HashSet;
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Diagnostics::ToolHelp::*;
-
-    let mut found = HashSet::new();
-    unsafe {
-        let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
-            Ok(h) => h,
-            Err(_) => return found,
-        };
-        let mut entry = PROCESSENTRY32 {
-            dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
-            ..Default::default()
-        };
-        if Process32First(snapshot, &mut entry).is_ok() {
-            loop {
-                let name: String = entry
-                    .szExeFile
-                    .iter()
-                    .take_while(|&&c| c != 0)
-                    .map(|&c| c as u8 as char)
-                    .collect();
-                if let Some(info) = focuser_common::browser::identify_browser(&name) {
-                    found.insert(info.browser_type.clone());
-                }
-                if Process32Next(snapshot, &mut entry).is_err() {
-                    break;
-                }
-            }
-        }
-        let _ = CloseHandle(snapshot);
-    }
-    found
-}
-
-#[cfg(not(windows))]
-pub fn detect_running_browsers() -> std::collections::HashSet<focuser_common::extension::BrowserType>
-{
-    std::collections::HashSet::new()
+    focuser_common::process::list()
+        .into_iter()
+        .filter_map(|process| {
+            focuser_common::browser::identify_browser(&process.name)
+                .map(|browser| browser.browser_type.clone())
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -159,12 +126,51 @@ pub async fn do_update(app: tauri::AppHandle) -> Result<(), String> {
 /// store page in the browser that actually needs it.
 #[tauri::command]
 pub fn open_browser_url(browser: String, url: String) -> Result<(), String> {
-    let exe_path = resolve_browser_exe(&browser);
-    std::process::Command::new(&exe_path)
-        .arg(&url)
-        .spawn()
-        .map_err(|e| format!("Failed to open {browser} at {exe_path}: {e}"))?;
-    Ok(())
+    #[cfg(target_os = "macos")]
+    {
+        let output = macos_open_command(&browser, &url)?
+            .output()
+            .map_err(|e| format!("Failed to open {browser} at {url}: {e}"))?;
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "Failed to open {browser} at {url}: {}",
+                error.trim()
+            ));
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let exe_path = resolve_browser_exe(&browser);
+        std::process::Command::new(&exe_path)
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("Failed to open {browser} at {exe_path}: {e}"))?;
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn resolve_browser_app(browser: &str) -> Option<&'static str> {
+    match browser {
+        "chrome" => Some("Google Chrome"),
+        "firefox" => Some("Firefox"),
+        "msedge" => Some("Microsoft Edge"),
+        "brave" => Some("Brave Browser"),
+        "opera" => Some("Opera"),
+        _ => None,
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_open_command(browser: &str, url: &str) -> Result<std::process::Command, String> {
+    let app =
+        resolve_browser_app(browser).ok_or_else(|| format!("Unsupported browser: {browser}"))?;
+    let mut command = std::process::Command::new("/usr/bin/open");
+    command.args(["-a", app, url]);
+    Ok(command)
 }
 
 /// Resolve a browser short name to its full executable path by querying the
@@ -278,7 +284,41 @@ fn find_exe_in_user_dirs(exe_name: &str) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn resolve_browser_exe(browser: &str) -> String {
     browser.to_string()
+}
+
+#[cfg(test)]
+mod macos_tests {
+    use super::{macos_open_command, resolve_browser_app};
+
+    #[test]
+    fn browser_launch_names_resolve_to_macos_app_names() {
+        assert_eq!(resolve_browser_app("chrome"), Some("Google Chrome"));
+        assert_eq!(resolve_browser_app("firefox"), Some("Firefox"));
+        assert_eq!(resolve_browser_app("msedge"), Some("Microsoft Edge"));
+        assert_eq!(resolve_browser_app("brave"), Some("Brave Browser"));
+        assert_eq!(resolve_browser_app("opera"), Some("Opera"));
+        assert_eq!(resolve_browser_app("unknown"), None);
+    }
+
+    #[test]
+    fn browser_launch_command_targets_the_selected_app_and_url() {
+        let command = macos_open_command("chrome", "https://example.com/settings")
+            .expect("supported browser should produce a command");
+        assert_eq!(command.get_program(), "/usr/bin/open");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["-a", "Google Chrome", "https://example.com/settings"]
+        );
+    }
+
+    #[test]
+    fn browser_launch_command_rejects_unknown_apps_without_running_them() {
+        assert!(macos_open_command("unknown", "https://example.com").is_err());
+    }
 }

@@ -65,7 +65,11 @@
       "wix": null
     },
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "13.0",
+      "files": {
+        "MacOS/focusguard-service": "./resources/focusguard-service",
+        "Library/LaunchDaemons/com.publikhq.focusguard.daemon.plist": "./launchd/com.publikhq.focusguard.daemon.plist"
+      }
     },
     "linux": {
       "deb": {

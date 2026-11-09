@@ -34,12 +34,28 @@ impl BlockList {
         exe_path: Option<&str>,
         window_title: Option<&str>,
     ) -> bool {
+        self.should_block_app_with_bundle_id(process_name, exe_path, window_title, None)
+    }
+
+    pub fn should_block_app_with_bundle_id(
+        &self,
+        process_name: &str,
+        exe_path: Option<&str>,
+        window_title: Option<&str>,
+        bundle_id: Option<&str>,
+    ) -> bool {
         // The rules go first. This runs for every process on the machine every
         // few seconds, nearly all of them match nothing, and working out the
         // hours is by far the slower half.
         self.enabled
             && self.applications.iter().any(|rule| {
-                rule.enabled && rule.matches_process(process_name, exe_path, window_title)
+                rule.enabled
+                    && rule.matches_process_with_bundle_id(
+                        process_name,
+                        exe_path,
+                        window_title,
+                        bundle_id,
+                    )
             })
             && self.is_effectively_active()
     }
@@ -105,6 +121,16 @@ impl AppRule {
         exe_path: Option<&str>,
         window_title: Option<&str>,
     ) -> bool {
+        self.matches_process_with_bundle_id(process_name, exe_path, window_title, None)
+    }
+
+    pub fn matches_process_with_bundle_id(
+        &self,
+        process_name: &str,
+        exe_path: Option<&str>,
+        window_title: Option<&str>,
+        bundle_id: Option<&str>,
+    ) -> bool {
         let name_lower = process_name.to_lowercase();
 
         match &self.match_type {
@@ -117,7 +143,9 @@ impl AppRule {
             AppMatchType::WindowTitle(title) => window_title
                 .map(|t| t.to_lowercase().contains(&title.to_lowercase()))
                 .unwrap_or(false),
-            AppMatchType::BundleId(_) => false, // macOS only, handled separately
+            AppMatchType::BundleId(expected) => {
+                bundle_id.is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+            }
         }
     }
 }
@@ -188,6 +216,30 @@ mod tests {
         assert!(list.should_block_app("steam.exe", None, None));
         assert!(!list.should_block_app("chrome.exe", None, None));
         assert!(list.should_block_app("chrome.exe", None, Some("YouTube - Google Chrome")));
+    }
+
+    #[test]
+    fn bundle_identifier_matches_case_insensitively_and_requires_bundle_metadata() {
+        let mut list = BlockList::new("Apps");
+        list.applications.push(AppRule {
+            id: crate::types::new_id(),
+            match_type: AppMatchType::BundleId("com.example.Focus".into()),
+            enabled: true,
+        });
+
+        assert!(list.should_block_app_with_bundle_id(
+            "Focus",
+            Some("/Applications/Focus.app/Contents/MacOS/Focus"),
+            None,
+            Some("COM.EXAMPLE.FOCUS"),
+        ));
+        assert!(!list.should_block_app_with_bundle_id(
+            "Focus",
+            None,
+            None,
+            Some("com.example.FocusPro"),
+        ));
+        assert!(!list.should_block_app("Focus", None, None));
     }
 
     #[test]

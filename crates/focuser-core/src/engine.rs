@@ -65,8 +65,18 @@ impl BlockEngine {
         exe_path: Option<&str>,
         window_title: Option<&str>,
     ) -> Option<&str> {
+        self.check_app_with_bundle_id(process_name, exe_path, window_title, None)
+    }
+
+    pub fn check_app_with_bundle_id(
+        &self,
+        process_name: &str,
+        exe_path: Option<&str>,
+        window_title: Option<&str>,
+        bundle_id: Option<&str>,
+    ) -> Option<&str> {
         for list in &self.cached_lists {
-            if list.should_block_app(process_name, exe_path, window_title)
+            if list.should_block_app_with_bundle_id(process_name, exe_path, window_title, bundle_id)
                 && !(focuser_common::session::app_usage_measurable()
                     && self.db.shared_permits_at(list, chrono::Local::now()))
             {
@@ -546,6 +556,30 @@ mod tests {
         let engine = setup_engine();
         assert_eq!(engine.check_app("steam.exe", None, None), Some("Games"));
         assert_eq!(engine.check_app("chrome.exe", None, None), None);
+    }
+
+    #[test]
+    fn bundle_id_is_matched_when_the_platform_supplies_one() {
+        let db = Database::open_in_memory().unwrap();
+        let mut list = focuser_common::types::BlockList::new("Focus");
+        list.applications.push(focuser_common::types::AppRule {
+            id: focuser_common::types::new_id(),
+            match_type: focuser_common::types::AppMatchType::BundleId("com.example.Focus".into()),
+            enabled: true,
+        });
+        db.create_block_list(&list).unwrap();
+        let engine = BlockEngine::new(db).unwrap();
+
+        assert_eq!(
+            engine.check_app_with_bundle_id(
+                "Focus",
+                Some("/Applications/Focus.app/Contents/MacOS/Focus"),
+                None,
+                Some("com.example.Focus"),
+            ),
+            Some("Focus"),
+        );
+        assert_eq!(engine.check_app("Focus", None, None), None);
     }
 
     #[test]
