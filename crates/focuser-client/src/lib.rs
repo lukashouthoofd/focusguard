@@ -506,17 +506,14 @@ mod unix_tests {
     use super::{ClientError, execute_unix};
 
     fn socket_path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "focusguard-client-{}-{}.sock",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ))
+        std::path::Path::new("/tmp").join(format!("fg-{}.sock", uuid::Uuid::new_v4()))
     }
 
     #[tokio::test]
     async fn unix_client_authenticates_server_and_checks_response_id() {
         let path = socket_path();
-        let listener = UnixListener::bind(&path).unwrap();
+        let listener = UnixListener::bind(&path)
+            .unwrap_or_else(|error| panic!("failed to bind {}: {error}", path.display()));
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = protocol::read_request_async(&mut stream).await.unwrap();
@@ -546,7 +543,8 @@ mod unix_tests {
     #[tokio::test]
     async fn unix_client_rejects_a_service_peer_with_the_wrong_uid() {
         let path = socket_path();
-        let listener = UnixListener::bind(&path).unwrap();
+        let listener = UnixListener::bind(&path)
+            .unwrap_or_else(|error| panic!("failed to bind {}: {error}", path.display()));
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut byte = [0; 1];
