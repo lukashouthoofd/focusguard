@@ -242,40 +242,19 @@ jobs:
           mkdir -p crates/focuser-ui/binaries
           cp "target/${{ matrix.target }}/release/focuser-cli" "crates/focuser-ui/binaries/focuser-cli-${{ matrix.target }}"
 
-      # The v2.10.1 x86_64 Darwin archive contains an ARM64 Mach-O binary; build
-      # from source on Intel until the upstream asset is corrected.
-      - name: Cache Intel Tauri CLI
-        if: matrix.target == 'x86_64-apple-darwin'
+      # Build a native CLI for each runner architecture. The v2.10.1 x86_64
+      # Darwin release asset was mislabeled as ARM64, so use Cargo for both.
+      - name: Cache native Tauri CLI
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/cargo-tauri
             ~/.cargo/.crates.toml
             ~/.cargo/.crates2.json
-          key: tauri-cli-x86_64-apple-darwin-v2.10.1
+          key: tauri-cli-${{ matrix.target }}-v2.10.1
 
-      - name: Install Tauri CLI from source on Intel
-        if: matrix.target == 'x86_64-apple-darwin'
+      - name: Install Tauri CLI from source
         run: cargo install tauri-cli --locked --version 2.10.1
-
-      - name: Install checksum-verified Tauri CLI on Apple Silicon
-        if: matrix.target == 'aarch64-apple-darwin'
-        shell: bash
-        env:
-          TAURI_TARGET: ${{ matrix.target }}
-        run: |
-          sha256=f89d7d9485d3a6a6bcbc88275b0bddea61fe582ca636fc02c286994af1f6e36b
-          asset="cargo-tauri-${TAURI_TARGET}.zip"
-          archive="$RUNNER_TEMP/$asset"
-          url="https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.10.1/$asset"
-          curl --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 2 "$url" --output "$archive"
-          echo "$sha256  $archive" | shasum -a 256 --check --status
-          install_dir="$RUNNER_TEMP/tauri-cli"
-          mkdir -p "$install_dir"
-          unzip -q "$archive" -d "$install_dir"
-          chmod +x "$install_dir/cargo-tauri"
-          echo "$install_dir" >> "$GITHUB_PATH"
-          "$install_dir/cargo-tauri" --version
 
       - name: Build unsigned DMG without updater artifacts
         working-directory: crates/focuser-ui
