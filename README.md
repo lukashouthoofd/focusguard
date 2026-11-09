@@ -36,7 +36,20 @@ These goals are not all implemented yet. Read [PROGRESS.md](PROGRESS.md), the [r
 
 ## Build and test
 
-The desktop app uses stable Rust, Node.js 22/npm, and Tauri v2. Follow the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/): Windows requires the MSVC build tools and WebView2; macOS desktop development requires Xcode or Xcode Command Line Tools. Build the CLI sidecar before running the desktop app; CI stages it under the host-specific sidecar name.
+The desktop app uses stable Rust, Node.js 22/npm, and Tauri v2. Follow the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/): Windows requires the MSVC build tools and WebView2; macOS desktop development requires Xcode or Xcode Command Line Tools. The desktop launcher below builds and stages the host CLI sidecar before starting Tauri.
+
+### Run the desktop app in development
+
+From the repository root, install the frontend dependencies and Tauri CLI, then start the app:
+
+```sh
+cd crates/focuser-ui/frontend
+npm ci
+cargo install tauri-cli --locked --version 2.10.1
+npm run desktop
+```
+
+The desktop launcher builds and stages the host-specific `focuser-cli` sidecar, then runs `cargo tauri dev` from the Tauri app directory. The macOS development app does not activate the privileged website-blocking service; see the macOS status below.
 
 ### Windows
 
