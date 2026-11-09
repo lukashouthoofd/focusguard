@@ -172,7 +172,18 @@ function Start-HiddenAndWait([string] $Path, [string[]] $Arguments, [int] $Timeo
     throw "$([IO.Path]::GetFileName($Path)) exceeded its $TimeoutSeconds-second timeout.$detail"
   }
   if ($process.ExitCode -ne 0) {
-    throw "$([IO.Path]::GetFileName($Path)) exited $($process.ExitCode)."
+    $detail = ''
+    if ([IO.Path]::GetFullPath($Path) -eq [IO.Path]::GetFullPath($installer)) {
+      $diagnostics = [Collections.Generic.List[string]]::new()
+      if (Test-Path -LiteralPath $lifecycleTracePath) {
+        $diagnostics.Add("Lifecycle trace:`n$((Get-Content -LiteralPath $lifecycleTracePath -Tail 100) -join [Environment]::NewLine)")
+      }
+      if (Test-Path -LiteralPath $nsisLogPath) {
+        $diagnostics.Add("NSIS log:`n$((Get-Content -LiteralPath $nsisLogPath -Tail 100) -join [Environment]::NewLine)")
+      }
+      if ($diagnostics.Count -gt 0) { $detail = "`n$($diagnostics -join "`n")" }
+    }
+    throw "$([IO.Path]::GetFileName($Path)) exited $($process.ExitCode).$detail"
   }
 }
 
