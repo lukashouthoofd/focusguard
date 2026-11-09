@@ -475,6 +475,9 @@ try {
   Start-HiddenAndWait $installer @('/S', '/UPDATE', "/LOG=$nsisLogPath")
   $service = Wait-ProductService 'Running' $preUpdatePid
   Wait-HostsRule
+  # Extension presence is intentionally transient and resets with the service.
+  # Re-send the synthetic session heartbeat before asserting that health state.
+  Invoke-NativeHeartbeat
   Invoke-Probe 'verify'
   Write-Host "Update-mode install kept policy active and restarted the service as PID $($service.ProcessId)."
 
@@ -490,6 +493,8 @@ try {
   Stop-Process -Id $previousPid -Force
   $service = Wait-ProductService 'Running' $previousPid
   Wait-HostsRule
+  Invoke-NativeHeartbeat
+  Invoke-Probe 'verify'
   Write-Host "SCM restarted the installed service as PID $($service.ProcessId) and restored the policy."
 
   Start-HiddenAndWait $uninstallerPath @('/S')
