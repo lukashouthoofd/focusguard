@@ -138,7 +138,7 @@ pub fn open_browser_url(browser: String, url: String) -> Result<(), String> {
                 error.trim()
             ));
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]

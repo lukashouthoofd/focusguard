@@ -170,10 +170,14 @@ pub fn macos_service_status() -> String {
 pub fn register_macos_service(app: tauri::AppHandle) -> Result<(), CommandErrorPayload> {
     focuser_client::register_macos_service().map_err(service_client_error)?;
     #[cfg(target_os = "macos")]
-    app.restart();
+    {
+        app.restart()
+    }
     #[cfg(not(target_os = "macos"))]
-    let _ = app;
-    Ok(())
+    {
+        let _ = app;
+        Ok(())
+    }
 }
 
 /// Open the macOS Login Items settings pane for service approval and control.
