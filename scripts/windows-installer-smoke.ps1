@@ -206,6 +206,97 @@ function Assert-HostsResolution([string] $Domain) {
   Write-Host "Windows name resolution maps $Domain to 127.0.0.1 through the hosts file."
 }
 
+function Assert-BrowserUsesHosts([string] $Domain) {
+  $edgeRoots = @(
+    [Environment]::GetEnvironmentVariable('ProgramFiles(x86)'),
+    $env:ProgramW6432,
+    $env:ProgramFiles
+  ) | Where-Object { $_ }
+  $edgePath = $null
+  foreach ($root in $edgeRoots) {
+    $candidate = Join-Path $root 'Microsoft\Edge\Application\msedge.exe'
+    if (Test-Path -LiteralPath $candidate) { $edgePath = $candidate; break }
+  }
+  if (-not $edgePath) { throw 'Microsoft Edge is missing from the hosted Windows runner; browser hosts verification cannot run.' }
+
+  $tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
+  $runId = [Guid]::NewGuid().ToString('N')
+  $profilePath = Join-Path $tempRoot "focusguard-edge-smoke-$runId"
+  $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+  $client = $null
+
+  try {
+    $listener.Start()
+    $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+    $url = "http://${Domain}:$port/"
+    $arguments = @(
+      '--headless=new',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--no-proxy-server',
+      "--user-data-dir=$profilePath",
+      '--dump-dom',
+      $url
+    )
+    Start-Process -FilePath $edgePath -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while (-not $listener.Pending() -and [DateTime]::UtcNow -lt $deadline) {
+      Start-Sleep -Milliseconds 100
+    }
+    if (-not $listener.Pending()) { throw "Microsoft Edge did not connect to the loopback sink for '$Domain'." }
+
+    $client = $listener.AcceptTcpClient()
+    $stream = $client.GetStream()
+    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII)
+    $requestLine = $reader.ReadLine()
+    if ($requestLine -notmatch '^GET / HTTP/1\.[01]$') {
+      throw "Microsoft Edge sent an unexpected loopback request line: '$requestLine'."
+    }
+    $hostHeader = $null
+    while ($null -ne ($line = $reader.ReadLine())) {
+      if ($line.Length -eq 0) { break }
+      if ($line.StartsWith('Host: ', [StringComparison]::OrdinalIgnoreCase)) {
+        $hostHeader = $line.Substring(6).Trim()
+      }
+    }
+    if (-not [string]::Equals($hostHeader, "${Domain}:$port", [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Microsoft Edge reached the loopback listener with an unexpected Host header: '$hostHeader'."
+    }
+    $body = '<!doctype html><title>FocusGuard loopback sink</title><body>Blocked</body>'
+    $bodyBytes = [Text.Encoding]::UTF8.GetBytes($body)
+    $header = "HTTP/1.1 403 Forbidden`r`nContent-Type: text/html; charset=utf-8`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
+    $headerBytes = [Text.Encoding]::ASCII.GetBytes($header)
+    $stream.Write($headerBytes, 0, $headerBytes.Length)
+    $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+    $stream.Flush()
+    $client.Close()
+    $client = $null
+    Write-Host "Microsoft Edge requested $Domain and reached the test-only loopback sink."
+  } finally {
+    if ($null -ne $client) { $client.Dispose() }
+    $listener.Stop()
+
+    $ownedEdgeProcesses = @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction SilentlyContinue | Where-Object {
+      $_.CommandLine -and $_.CommandLine.IndexOf($profilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    })
+    foreach ($ownedEdgeProcess in $ownedEdgeProcesses) {
+      Stop-Process -Id $ownedEdgeProcess.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    if ($ownedEdgeProcesses.Count -gt 0) { Start-Sleep -Milliseconds 200 }
+
+    $tempRootFull = [IO.Path]::GetFullPath($tempRoot).TrimEnd('\') + '\'
+    $profileFull = [IO.Path]::GetFullPath($profilePath)
+    if (-not $profileFull.StartsWith($tempRootFull, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Refusing to remove the Edge profile outside the temporary test directory.'
+    }
+    if (Test-Path -LiteralPath $profileFull) {
+      Remove-Item -LiteralPath $profileFull -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Test-DohBypass([string] $Domain) {
   $uri = "https://cloudflare-dns.com/dns-query?name=$([Uri]::EscapeDataString($Domain))&type=A"
   try {
@@ -493,6 +584,7 @@ try {
   Invoke-Probe 'seed'
   Wait-HostsRule
   Assert-HostsResolution $testDomain
+  Assert-BrowserUsesHosts $testDomain
   Wait-HostsRule $dohTestDomain
   Assert-HostsResolution $dohTestDomain
   Test-DohBypass $dohTestDomain
