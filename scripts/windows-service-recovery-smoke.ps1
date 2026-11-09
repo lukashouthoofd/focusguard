@@ -19,6 +19,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $serviceExe = Join-Path $repoRoot 'target\debug\focusguard-service.exe'
 $nativeHostExe = Join-Path $repoRoot 'target\debug\focuser-native.exe'
 $probeExe = Join-Path $repoRoot 'target\debug\examples\scm_policy_probe.exe'
+$chromeExtensionId = (Get-Content -LiteralPath (Join-Path $repoRoot 'extension\identity.json') -Raw | ConvertFrom-Json).chrome_extension_id
 $runnerTemp = (Resolve-Path $env:RUNNER_TEMP).Path.TrimEnd('\')
 $testRoot = Join-Path $runnerTemp ("focusguard-scm-recovery-" + [guid]::NewGuid().ToString('N'))
 $databasePath = Join-Path $testRoot 'policy.db'
@@ -166,7 +167,8 @@ function Invoke-NativeHeartbeat {
 
     $process = $null
     try {
-        $process = Start-Process -FilePath $nativeHostExe -PassThru -WindowStyle Hidden `
+        $nativeArgs = @("chrome-extension://$chromeExtensionId/", '--parent-window=0')
+        $process = Start-Process -FilePath $nativeHostExe -ArgumentList $nativeArgs -PassThru -WindowStyle Hidden `
         -RedirectStandardInput $requestPath -RedirectStandardOutput $responsePath `
         -RedirectStandardError $errorPath
         if (-not $process.WaitForExit(15000)) {

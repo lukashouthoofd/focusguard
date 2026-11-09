@@ -1,0 +1,43 @@
+name: Package browser extensions
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build signed-store submission archives (no submission)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - run: npm ci
+      - run: npm run compile
+      - run: npm test
+      - run: npm run build
+      - run: npm run build:firefox
+      - run: npm run zip
+      - run: npm run zip:firefox
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: focusguard-browser-extensions
+          path: extension/.output/*.zip
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30

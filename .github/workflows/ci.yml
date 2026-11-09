@@ -278,11 +278,13 @@ jobs:
       - name: Stage Windows enforcement resources
         shell: pwsh
         run: |
-          cargo build --locked --release -p focuser-service --bin focusguard-service
+          cargo build --locked --release -p focuser-service --bin focusguard-service --example scm_policy_probe
           cargo build --locked --release -p focuser-native
           New-Item -ItemType Directory -Force crates/focuser-ui/resources | Out-Null
           Copy-Item target/release/focusguard-service.exe crates/focuser-ui/resources/focusguard-service.exe
           Copy-Item target/release/focuser-native.exe crates/focuser-ui/resources/focuser-native.exe
+          Copy-Item crates/focuser-ui/nsis/service-lifecycle.ps1 crates/focuser-ui/resources/service-lifecycle.ps1
+          Copy-Item extension/identity.json crates/focuser-ui/resources/extension-identity.json
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version 2.10.1
@@ -291,8 +293,15 @@ jobs:
         working-directory: crates/focuser-ui
         shell: pwsh
         run: |
-          cargo tauri build --bundles nsis --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false,"resources":{"resources/focusguard-service.exe":"focusguard-service.exe","resources/focuser-native.exe":"focuser-native.exe"}}}'
+          cargo tauri build --bundles nsis --no-sign --ci --config '{"bundle":{"createUpdaterArtifacts":false,"resources":{"resources/focusguard-service.exe":"focusguard-service.exe","resources/focuser-native.exe":"focuser-native.exe","resources/service-lifecycle.ps1":"service-lifecycle.ps1","resources/extension-identity.json":"extension-identity.json"}}}'
           $packages = @(Get-ChildItem ../../target/release/bundle/nsis -File -Filter '*.exe')
           if ($packages.Count -ne 1) { throw "Expected one NSIS package, found $($packages.Count)." }
           if ($packages[0].Length -le 0) { throw 'The NSIS package is empty.' }
           Write-Output "Built unsigned Windows package: $($packages[0].Name) ($($packages[0].Length) bytes)"
+
+      - name: Install, exercise recovery, and uninstall on disposable Windows runner
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem target/release/bundle/nsis -File -Filter '*.exe')
+          if ($packages.Count -ne 1) { throw "Expected one NSIS package, found $($packages.Count)." }
+          ./scripts/windows-installer-smoke.ps1 -InstallerPath $packages[0].FullName

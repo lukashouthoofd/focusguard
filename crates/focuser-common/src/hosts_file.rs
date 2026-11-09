@@ -26,6 +26,7 @@ use windows::{
 
 const HOSTS_BEGIN: &str = "# ──── BEGIN FOCUSGUARD BLOCK ────";
 const HOSTS_END: &str = "# ──── END FOCUSGUARD BLOCK ────";
+const HOSTS_SEPARATOR_INSERTED: &str = "# FocusGuard inserted the preceding newline";
 const HOSTS_NOTE: &str = "# Added by FocusGuard to block sites. If FocusGuard is gone, delete this block from BEGIN to END.";
 
 static HOSTS_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -164,6 +165,13 @@ pub fn replace_section(content: &str, domains: &[String]) -> Result<String, Host
         }
     }
 
+    let separator_was_inserted = match (begins.as_slice(), ends.as_slice()) {
+        ([begin], [end]) if begin < end => lines[*begin + 1..*end]
+            .iter()
+            .any(|line| line.trim_end_matches(['\r', '\n']).trim() == HOSTS_SEPARATOR_INSERTED),
+        _ => false,
+    };
+
     let (prefix_end, suffix_start) = match (begins.as_slice(), ends.as_slice()) {
         ([], []) => (lines.len(), lines.len()),
         ([begin], [end]) if begin < end => (*begin, end + 1),
@@ -191,6 +199,13 @@ pub fn replace_section(content: &str, domains: &[String]) -> Result<String, Host
     result.push_str(&prefix);
 
     if domains.is_empty() {
+        if separator_was_inserted {
+            if result.ends_with("\r\n") {
+                result.truncate(result.len() - 2);
+            } else if result.ends_with('\n') {
+                result.pop();
+            }
+        }
         result.push_str(&suffix);
         return Ok(result);
     }
@@ -213,11 +228,17 @@ pub fn replace_section(content: &str, domains: &[String]) -> Result<String, Host
     } else {
         "\n"
     };
+    let mut separator_was_inserted = separator_was_inserted;
     if !result.is_empty() && !result.ends_with('\n') {
         result.push_str(newline);
+        separator_was_inserted = true;
     }
     result.push_str(HOSTS_BEGIN);
     result.push_str(newline);
+    if separator_was_inserted {
+        result.push_str(HOSTS_SEPARATOR_INSERTED);
+        result.push_str(newline);
+    }
     result.push_str(HOSTS_NOTE);
     result.push_str(newline);
     for domain in unique_domains {
@@ -347,6 +368,14 @@ mod tests {
             !updated.contains("\n")
                 || updated.matches("\n").count() == updated.matches("\r\n").count()
         );
+    }
+
+    #[test]
+    fn removing_a_block_restores_an_unterminated_original_byte_for_byte() {
+        for original in ["# custom comment\r\n127.0.0.1 localhost", "localhost\n"] {
+            let blocked = replace_section(original, &["reddit.com".into()]).unwrap();
+            assert_eq!(replace_section(&blocked, &[]).unwrap(), original);
+        }
     }
 
     #[test]

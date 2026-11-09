@@ -1,5 +1,23 @@
 import tailwindcss from "@tailwindcss/vite";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { defineConfig } from "wxt";
+
+const extensionIdentity = JSON.parse(
+  readFileSync(new URL("./identity.json", import.meta.url), "utf8"),
+) as {
+  chrome_extension_id: string;
+  chrome_public_key: string;
+  firefox_extension_id: string;
+};
+const derivedChromeId = createHash("sha256")
+  .update(Buffer.from(extensionIdentity.chrome_public_key, "base64"))
+  .digest()
+  .subarray(0, 16)
+  .reduce((id, byte) => id + String.fromCharCode(97 + (byte >> 4), 97 + (byte & 15)), "");
+if (derivedChromeId !== extensionIdentity.chrome_extension_id) {
+  throw new Error("The Chrome extension ID does not match its pinned public key.");
+}
 
 // `public/premade-lists.json` is a copy of the desktop app's. It used to be
 // read from `../crates/...` at build time, which made this folder impossible
@@ -45,6 +63,7 @@ export default defineConfig({
     ],
     host_permissions: ["<all_urls>"],
     icons: ICONS,
+    ...(browser === "chrome" ? { key: extensionIdentity.chrome_public_key } : {}),
     action: { default_icon: ICONS },
     // The block page is injected into blocked tabs rather than navigated to,
     // so its script and the category data must be readable from any origin.
@@ -60,7 +79,7 @@ export default defineConfig({
       ? {
           browser_specific_settings: {
             gecko: {
-              id: "focusguard@publikhq.com",
+              id: extensionIdentity.firefox_extension_id,
               strict_min_version: "142.0",
               data_collection_permissions: { required: ["none"] },
             },

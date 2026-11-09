@@ -71,6 +71,8 @@ dist/
 *.AppImage
 # Sidecar binaries (built by CI, not committed)
 crates/focuser-ui/binaries/
+# Windows installer payloads (staged by CI immediately before NSIS packaging)
+crates/focuser-ui/resources/
 
 # ─── Internal working docs (local only, never pushed) ────
 # Per-task plans, progress logs, gotchas. See internal-docs/README.md
@@ -84,9 +86,10 @@ extension/.output/
 extension/.wxt/
 extension/stats.html
 
-# Unused Focuser-branded promotional images; replace with FocusGuard assets
-# before adding project screenshots or store artwork.
-assets/
+# Preserve the FocusGuard listing artwork; leave unrelated artwork ignored.
+!assets/
+assets/*
+!assets/focusguard-cover.png
 
 # Tauri writes one of these per platform it is built on; the desktop one is
 # the copy that is kept.

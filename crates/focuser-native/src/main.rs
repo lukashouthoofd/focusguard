@@ -11,12 +11,17 @@
 
 mod ipc_client;
 
-use std::io::{self, Read, Write};
+use std::{
+    ffi::OsString,
+    io::{self, Read, Write},
+};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use focuser_common::extension::{ExtensionServiceEvent, NativeMessage, NativeMessageType};
 use tracing::{debug, error, info};
+
+const EXTENSION_IDENTITY_JSON: &str = include_str!("../../../extension/identity.json");
 
 #[derive(Parser)]
 #[command(
@@ -41,7 +46,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Log to file instead of stdout (stdout is reserved for Native Messaging)
-    let log_dir = directories::ProjectDirs::from("com", "focuser", "FocusGuard")
+    let log_dir = directories::ProjectDirs::from("com", "publikhq", "FocusGuard")
         .map(|d| d.data_dir().to_path_buf())
         .unwrap_or_else(std::env::temp_dir);
     let _ = std::fs::create_dir_all(&log_dir);
@@ -60,20 +65,61 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    let cli = Cli::parse();
-
-    match cli.command {
-        Some(Commands::Install { extension_id }) => {
+    let mut process_args = std::env::args_os();
+    let executable = process_args.next().unwrap_or_default();
+    let host_args: Vec<OsString> = process_args.collect();
+    if matches!(
+        host_args.first().and_then(|arg| arg.to_str()),
+        Some("install" | "--help" | "--version")
+    ) {
+        let cli = Cli::parse_from(std::iter::once(executable).chain(host_args));
+        if let Some(Commands::Install { extension_id }) = cli.command {
             install_native_host(&extension_id)?;
-            return Ok(());
         }
-        None => {
-            // Default: run as Native Messaging host
-            run_native_host().await?;
+        return Ok(());
+    }
+
+    validate_native_messaging_args(&host_args)?;
+    run_native_host().await
+}
+
+fn validate_native_messaging_args(args: &[OsString]) -> Result<()> {
+    let identity: serde_json::Value = serde_json::from_str(EXTENSION_IDENTITY_JSON)
+        .context("parse the packaged browser extension identity")?;
+    let chrome_id = identity["chrome_extension_id"]
+        .as_str()
+        .context("Chrome extension ID is missing from the packaged identity")?;
+    let firefox_id = identity["firefox_extension_id"]
+        .as_str()
+        .context("Firefox extension ID is missing from the packaged identity")?;
+    let values: Vec<&str> = args.iter().filter_map(|arg| arg.to_str()).collect();
+
+    let chrome_origin = format!("chrome-extension://{chrome_id}/");
+    if values.first() == Some(&chrome_origin.as_str()) {
+        let valid_parent_window = |value: &str| {
+            let window = value.strip_prefix("--parent-window=").unwrap_or(value);
+            !window.is_empty() && window.bytes().all(|byte| byte.is_ascii_digit())
+        };
+        if values.len() == 1 || (values.len() == 2 && valid_parent_window(values[1])) {
+            return Ok(());
         }
     }
 
-    Ok(())
+    let firefox_manifest_path = values
+        .first()
+        .map(|path| path.replace('/', "\\").to_ascii_lowercase());
+    let firefox_manifest_is_expected = firefox_manifest_path.is_some_and(|path| {
+        path.ends_with("\\native-messaging\\com.focuser.native.firefox.json")
+            || path.ends_with("\\native-messaging-hosts\\com.focuser.native.json")
+            || path.ends_with("\\nativemessaginghosts\\com.focuser.native.json")
+    });
+    if values.len() == 2 && values[1] == firefox_id && firefox_manifest_is_expected {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "native host launch did not come from the configured FocusGuard browser extension"
+    )
 }
 
 /// Run the Native Messaging host loop.
@@ -422,5 +468,35 @@ mod tests {
         assert!(!is_chrome_extension_id("chrome-extension://*/"));
         assert!(!is_chrome_extension_id("abcdefghijklmnopabcdefghijklmnopq"));
         assert!(!is_chrome_extension_id("abcdefghijklmnopabcdefghijklmnox"));
+    }
+
+    #[test]
+    fn native_host_accepts_only_the_pinned_chromium_and_firefox_launch_origins() {
+        let chrome_id = "kiioaengbdebgaeifenloahfipolcndj";
+        assert!(
+            validate_native_messaging_args(&[
+                OsString::from(format!("chrome-extension://{chrome_id}/")),
+                OsString::from("--parent-window=0"),
+            ])
+            .is_ok()
+        );
+        assert!(validate_native_messaging_args(&[
+            OsString::from(r"C:\Program Files\PublikHQ\FocusGuard\Service\native-messaging\com.focuser.native.firefox.json"),
+            OsString::from("focusguard@publikhq.com"),
+        ])
+        .is_ok());
+        assert!(validate_native_messaging_args(&[
+            OsString::from(r"C:\Users\test\AppData\Roaming\focuser\FocusGuard\data\native-messaging\com.focuser.native.firefox.json"),
+            OsString::from("focusguard@publikhq.com"),
+        ])
+        .is_ok());
+        assert!(
+            validate_native_messaging_args(&[
+                OsString::from("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"),
+                OsString::from("--parent-window=0"),
+            ])
+            .is_err()
+        );
+        assert!(validate_native_messaging_args(&[]).is_err());
     }
 }

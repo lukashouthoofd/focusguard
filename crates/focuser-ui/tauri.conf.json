@@ -55,7 +55,7 @@
     "longDescription": "FocusGuard is a free, open-source website and application blocker that helps you stay focused by blocking distracting websites and apps.",
     "windows": {
       "nsis": {
-        "installMode": "both",
+        "installMode": "perMachine",
         "startMenuFolder": "FocusGuard",
         "installerIcon": "icons/icon.ico",
         "headerImage": null,
