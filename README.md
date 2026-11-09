@@ -1,8 +1,6 @@
 # FocusGuard
 
-<p align="center">
-  <img src="assets/focusguard-cover-v2.png" alt="A luminous violet focus target with abstract browser windows fading at the edges" width="900">
-</p>
+![A luminous violet focus target with abstract browser windows fading at the edges](https://raw.githubusercontent.com/lukashouthoofd/focusguard/main/assets/focusguard-cover-v2.png)
 
 FocusGuard is a free, open-source focus blocker for Windows, with a persistent macOS website-blocking service in development. It is being developed from the MIT-licensed [Focuser 0.11.5](https://github.com/aadeshrao123/Focuser) project, with the goal of making blocking more reliable and recovery easier to understand. See [upstream attribution](docs/upstream-focuser.md).
 
